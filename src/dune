@@ -1,0 +1,5 @@
+(executable
+ (name orb)
+ (public_name orb)
+ (libraries opam-client)
+)
