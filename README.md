@@ -7,6 +7,13 @@ https://reproducible-builds.org). It installs the package twice (different path
 With option `--diffoscope`, mismatching files are copied and theyr diff using
 [`diffoscope`](https://diffoscope.org/) generated.
 
+## Install & use
+
+```
+$ opam pin git+https://github.com/rjbou/orb
+$ orb pkg [--diiffoscope]
+```
+
 This project is currently in early beta.
 
 ## How does it work?

@@ -1,0 +1,27 @@
+opam-version: "2.0"
+name: "orb"
+version: "0.1"
+synopsis: "Check opam package reproducibility"
+maintainer: "Raja Boujbel <rjbou@ocamlpro.com>"
+authors: "Raja Boujbel <rjbou@ocamlpro.com>"
+homepage: "https://github.com/rjbou/orb"
+bug-reports: "https://github.com/rjbou/orb/issues"
+depends: [
+  "cmdliner" {>= "1.0"}
+  "opam-client"
+  "opam-repository"
+  "opam-core"
+  "opam-format"
+  "opam-solver"
+  "opam-state"
+]
+build: ["dune" "build" "-p" name "-j" jobs]
+dev-repo: "git+https://github.com/rjbou/orb.git"
+pin-depends: [
+  ["opam-client.2.1.0~beta" "git+https://github.com/rjbou/opam#orb"]
+  ["opam-repository.2.1.0~beta" "git+https://github.com/rjbou/opam#orb"]
+  ["opam-core.2.1.0~beta" "git+https://github.com/rjbou/opam#orb"]
+  ["opam-format.2.1.0~beta" "git+https://github.com/rjbou/opam#orb"]
+  ["opam-solver.2.1.0~beta" "git+https://github.com/rjbou/opam#orb"]
+  ["opam-state.2.1.0~beta" "git+https://github.com/rjbou/opam#orb"]
+]
