@@ -86,7 +86,7 @@ let add_env =
     let to_add =
       List.fold_left (fun swc v ->
           let s,_,_,_ = v in
-          match List.find_opt (fun (s',_,_,_) -> s = s') env with
+          match OpamStd.List.find_opt (fun (s',_,_,_) -> s = s') env with
           | Some _ -> swc
           | None -> v::swc) [] variables
     in
