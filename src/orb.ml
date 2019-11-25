@@ -79,16 +79,21 @@ let drop_states ?gt ?rt ?st () =
 let add_env =
   let variables = [
     "SOURCE_DATE_EPOCH", OpamParserTypes.Eq, string_of_float (Unix.time ()),
-    Some "Reproducible builds date"
+    Some "Reproducible builds date" ;
   ] in
-  fun gt st ->
+  fun switch gt st ->
     let env = OpamFile.Switch_config.env st.switch_config in
+    let prefix_map =
+      "BUILD_PATH_PREFIX_MAP", OpamParserTypes.Eq,
+      OpamSwitch.to_string switch ^ "=/tmp/bla",
+      Some "Build path prefix map"
+    in
     let to_add =
       List.fold_left (fun swc v ->
           let s,_,_,_ = v in
           match OpamStd.List.find_opt (fun (s',_,_,_) -> s = s') env with
           | Some _ -> swc
-          | None -> v::swc) [] variables
+          | None -> v::swc) [] (prefix_map :: variables)
     in
     let switch_config =
       OpamFile.Switch_config.with_env (to_add @ env) st.switch_config
@@ -107,7 +112,7 @@ let install_switch num switch =
     OpamSwitchCommand.install gt ~rt ~local_compiler:true
       ~packages:[] ~update_config:false switch
   in
-  let st = add_env gt st in
+  let st = add_env switch gt st in
   log ~num "Switch %s created!"
     (OpamConsole.colorise `green (OpamSwitch.to_string switch));
   drop_states ~gt ~rt ~st ()
@@ -121,7 +126,7 @@ let update_switch_env num switch =
   else
     OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
     OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
-    let st = add_env gt st in
+    let st = add_env switch gt st in
     drop_states ~gt ~rt ~st ()
 
 let install num switch atoms_or_locals =
