@@ -83,7 +83,7 @@ let add_env =
   ] in
   fun switch gt st ->
     let env = OpamFile.Switch_config.env st.switch_config in
-    let value = "=" ^ OpamSwitch.to_string switch in
+    let value = "/opt/share/ocaml=" ^ OpamSwitch.to_string switch in
     log "BPPM is %s!" (OpamConsole.colorise `green value);
     let prefix_map =
       "BUILD_PATH_PREFIX_MAP", OpamParserTypes.Eq,
