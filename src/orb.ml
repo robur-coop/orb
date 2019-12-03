@@ -340,7 +340,7 @@ let orb global_options build_options diffoscope keep_switches compiler_switches 
                Printf.sprintf "#%d - %s" num (OpamSwitch.to_string sw)) switches)))
   else
     seq switches (fun (num, sw) -> update_switch_env num sw);
-  fork switches (fun (num,sw) -> install num sw atoms_or_locals);
+  seq switches (fun (num,sw) -> install num sw atoms_or_locals);
   let tracking_maps =
     List.map (fun (_,sw) -> (tracking_maps sw atoms_or_locals)) switches
   in
