@@ -338,6 +338,7 @@ let orb global_options build_options diffoscope keep_switches compiler_switches 
   if use_switches = None then
     (seq switches (fun (num,sw) -> install_switch compiler_switches num sw);
      clean_switches := (fun () ->
+         (try Sys.remove target with _ -> ());
          if not keep_switches then
            seq switches (fun (num,sw) ->
                remove_switch num sw;
