@@ -142,7 +142,9 @@ let update_switch_env num switch =
 
 let install num switch atoms_or_locals =
   (* install symlink to fake stuff is installed *)
-  Sys.remove target;
+  if Sys.file_exists target then
+    exit_error `Not_found
+      "target of build path prefix map %s already exists" target;
   Unix.symlink (OpamSwitch.to_string switch) target;
   OpamGlobalState.with_ `Lock_none @@ fun gt ->
   OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
