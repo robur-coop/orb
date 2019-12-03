@@ -118,14 +118,11 @@ let install_switch compiler_switch num switch =
   let st = match compiler_switch with
     | None -> st
     | Some path ->
-      let src = `Source (OpamUrl.parse ("git+file://" ^ path)) in
-      let st =
-        OpamClient.PIN.pin st
-          (OpamPackage.Name.of_string "ocaml-variants")
-          src
+      let src = `Source (OpamUrl.parse ("git+file://" ^ path))
+      and pkg = OpamPackage.Name.of_string "ocaml-variants"
       in
-      OpamSwitchCommand.set_compiler st
-        [OpamPackage.Name.of_string "ocaml-variants", None]
+      let st = OpamClient.PIN.pin st pkg src in
+      OpamSwitchCommand.set_compiler st [pkg, None]
   in
   let st = add_env switch gt st in
   log ~num "Switch %s created!"
@@ -321,7 +318,9 @@ let orb global_options build_options diffoscope keep_switches compiler_switches 
   OpamArg.apply_global_options global_options;
   OpamArg.apply_build_options build_options;
   OpamCoreConfig.update ~precise_tracking:true ~answer:(Some true) ();
-  (* OpamStateConfig.update ~unlock_base:true (); *)
+  (match compiler_switches, use_switches with
+   | None, None -> OpamStateConfig.update ~unlock_base:true ();
+   | _ -> ());
   let switches =
     match use_switches with
     | Some (sw1, sw2) ->
