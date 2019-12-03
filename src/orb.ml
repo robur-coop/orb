@@ -147,7 +147,6 @@ let update_switch_env num switch =
     drop_states ~gt ~rt ~st ()
 
 let install num switch atoms_or_locals =
-  (* install symlink to fake stuff is installed *)
   if Sys.file_exists target then
     exit_error `Not_found
       "target of build path prefix map %s already exists" target;
@@ -323,7 +322,7 @@ let orb global_options build_options diffoscope keep_switches compiler_switches 
   OpamArg.apply_global_options global_options;
   OpamArg.apply_build_options build_options;
   OpamCoreConfig.update ~precise_tracking:true ~answer:(Some true) ();
-  OpamStateConfig.update ~unlock_base:true ();
+  (* OpamStateConfig.update ~unlock_base:true (); *)
   let switches =
     match use_switches with
     | Some (sw1, sw2) ->
