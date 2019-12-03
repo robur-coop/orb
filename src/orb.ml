@@ -76,6 +76,8 @@ let drop_states ?gt ?rt ?st () =
   OpamStd.Option.iter OpamRepositoryState.drop rt;
   OpamStd.Option.iter OpamGlobalState.drop gt
 
+let target = "/opt/share/ocaml"
+
 let add_env =
   let variables = [
     "SOURCE_DATE_EPOCH", OpamParserTypes.Eq, string_of_float (Unix.time ()),
@@ -83,7 +85,7 @@ let add_env =
   ] in
   fun switch gt st ->
     let env = OpamFile.Switch_config.env st.switch_config in
-    let value = "/opt/share/ocaml=" ^ OpamSwitch.to_string switch in
+    let value = target ^ "=" ^ OpamSwitch.to_string switch in
     log "BPPM is %s!" (OpamConsole.colorise `green value);
     let prefix_map =
       "BUILD_PATH_PREFIX_MAP", OpamParserTypes.Eq,
@@ -139,6 +141,9 @@ let update_switch_env num switch =
     drop_states ~gt ~rt ~st ()
 
 let install num switch atoms_or_locals =
+  (* install symlink to fake stuff is installed *)
+  Sys.remove target;
+  Unix.symlink (OpamSwitch.to_string switch) target;
   OpamGlobalState.with_ `Lock_none @@ fun gt ->
   OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
   OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
@@ -164,6 +169,7 @@ let install num switch atoms_or_locals =
   in
   log ~num "Install %s" (OpamFormula.string_of_atoms atoms);
   let st = OpamClient.install st atoms in
+  Sys.remove target;
   drop_states ~gt ~rt ~st ()
 
 let tracking_maps switch atoms_or_locals =
