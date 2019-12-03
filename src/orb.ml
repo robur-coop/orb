@@ -119,15 +119,7 @@ let install_switch compiler_switch num switch =
     | None -> st
     | Some path ->
       let src = `Source (OpamUrl.parse ("git+file://" ^ path)) in
-      let st =
-        OpamClient.PIN.pin st
-          (OpamPackage.Name.of_string "ocaml-variants")
-          ~version:(OpamPackage.Version.of_string "4.11.0+reproducible")
-          src
-      in
-      OpamSwitchCommand.set_compiler st
-        [OpamPackage.Name.of_string "ocaml",
-         Some (OpamPackage.Version.of_string "4.11.0")]
+      OpamClient.PIN.pin st (OpamPackage.Name.of_string "ocaml-variants") src
   in
   let st = add_env switch gt st in
   log ~num "Switch %s created!"
@@ -348,7 +340,10 @@ let orb global_options build_options diffoscope keep_switches compiler_switches 
                Printf.sprintf "#%d - %s" num (OpamSwitch.to_string sw)) switches)))
   else
     seq switches (fun (num, sw) -> update_switch_env num sw);
-  seq switches (fun (num,sw) -> install num sw atoms_or_locals);
+  (try
+     seq switches (fun (num,sw) -> install num sw atoms_or_locals)
+   with
+     (OpamStd.Sys.Exit _) as e -> !clean_switches (); raise e);
   let tracking_maps =
     List.map (fun (_,sw) -> (tracking_maps sw atoms_or_locals)) switches
   in
