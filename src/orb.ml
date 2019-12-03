@@ -139,6 +139,7 @@ let update_switch_env num switch =
     drop_states ~gt ~rt ~st ()
 
 let install num switch atoms_or_locals =
+  log ~num "Install start";
   if Sys.file_exists target then
     exit_error `Not_found
       "target of build path prefix map %s already exists" target;
@@ -340,10 +341,12 @@ let orb global_options build_options diffoscope keep_switches compiler_switches 
                Printf.sprintf "#%d - %s" num (OpamSwitch.to_string sw)) switches)))
   else
     seq switches (fun (num, sw) -> update_switch_env num sw);
+  log "environments extended, installing";
   (try
      seq switches (fun (num,sw) -> install num sw atoms_or_locals)
    with
      (OpamStd.Sys.Exit _) as e -> !clean_switches (); raise e);
+  log "installed";
   let tracking_maps =
     List.map (fun (_,sw) -> (tracking_maps sw atoms_or_locals)) switches
   in
