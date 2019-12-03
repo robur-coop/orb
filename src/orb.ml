@@ -120,9 +120,10 @@ let install_switch compiler_switch num switch =
     | Some path ->
       let pkg = OpamPackage.Name.of_string "ocaml-variants"
       and src = `Source (OpamUrl.parse ("git+file://" ^ path))
+      and version = OpamPackage.Version.of_string "4.11.0+trunk"
       in
-      let st = OpamClient.PIN.pin st pkg src in
-      OpamSwitchCommand.set_compiler st [pkg, None]
+      let st = OpamClient.PIN.pin ~version st pkg src in
+      OpamSwitchCommand.set_compiler st [pkg, Some version]
   in
   let st = add_env switch gt st in
   log ~num "Switch %s created!"
