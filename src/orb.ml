@@ -80,8 +80,8 @@ let target = "/opt/share/ocaml"
 
 let add_env =
   let variables = [
-    "SOURCE_DATE_EPOCH", OpamParserTypes.Eq, string_of_float (Unix.time ()),
-    Some "Reproducible builds date" ;
+(*    "SOURCE_DATE_EPOCH", OpamParserTypes.Eq, string_of_float (Unix.time ()),
+      Some "Reproducible builds date" ; *)
   ] in
   fun switch gt st ->
     let env = OpamFile.Switch_config.env st.switch_config in
