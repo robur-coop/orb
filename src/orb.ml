@@ -117,7 +117,7 @@ let install_switch compiler_switch num switch =
     | None -> st
     | Some path ->
       let pkg = OpamPackage.Name.of_string "ocaml-variants"
-      and src = `Source (OpamUrl.parse path)
+      and src = `Source (OpamUrl.parse ("git+file://" ^ path))
       in
       OpamClient.PIN.pin st pkg src
   in
