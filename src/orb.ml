@@ -106,12 +106,20 @@ let add_env =
     st
 
 (** Steps *)
-let install_switch num switch =
+let install_switch compiler_switch num switch =
   OpamGlobalState.with_ `Lock_write @@ fun gt ->
   OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
   let gt, st =
     OpamSwitchCommand.install gt ~rt ~local_compiler:true
       ~packages:[] ~update_config:false switch
+  in
+  let st = match compiler_switch with
+    | None -> st
+    | Some path ->
+      let pkg = OpamPackage.Name.of_string "ocaml-variants"
+      and src = `Source (OpamUrl.parse path)
+      in
+      OpamClient.PIN.pin st pkg src
   in
   let st = add_env switch gt st in
   log ~num "Switch %s created!"
@@ -286,7 +294,7 @@ let remove_switch num switch =
     (OpamSwitch.to_string switch |> OpamConsole.colorise `blue)
 
 (* Main function *)
-let orb global_options build_options diffoscope keep_switches use_switches
+let orb global_options build_options diffoscope keep_switches compiler_switches use_switches
     atoms_or_locals =
   if atoms_or_locals = [] then
     exit_error `Bad_arguments
@@ -314,7 +322,7 @@ let orb global_options build_options diffoscope keep_switches use_switches
           i, OpamSwitch.of_string (OpamSystem.mk_temp_dir ~prefix:"orb" ()))
   in
   if use_switches = None then
-    (seq switches (fun (num,sw) -> install_switch num sw);
+    (seq switches (fun (num,sw) -> install_switch compiler_switches num sw);
      clean_switches := (fun () ->
          if not keep_switches then
            seq switches (fun (num,sw) ->
@@ -370,6 +378,11 @@ let orb_cmd =
   let keep_switches =
     mk_flag ["keep-switches"] "keep built temporary switches"
   in
+  let compiler_switches =
+    mk_opt [ "compiler-switches" ] "[DIR]"
+      "use the compiler in [DIR] for the temporary switches"
+      Arg.(some string) None
+  in
   let use_switches =
     let switches =
       let parse str =
@@ -388,7 +401,7 @@ let orb_cmd =
       Arg.(some switches) None
   in
   Term.((const orb $ global_options $ build_options
-         $ diffoscope $ keep_switches $ use_switches
+         $ diffoscope $ keep_switches $ compiler_switches $ use_switches
          $ atom_or_local_list)),
   Term.info "orb" ~man ~doc
 
