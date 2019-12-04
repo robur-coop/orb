@@ -321,7 +321,7 @@ let orb global_options build_options diffoscope keep_switches compiler_switches 
   (match compiler_switches, use_switches with
    | None, None -> OpamStateConfig.update ~unlock_base:true ();
    | _ -> ());
-  let switches =
+(*  let switches =
     match use_switches with
     | Some (sw1, sw2) ->
       OpamConsole.note "Use switches %s and %s"
@@ -330,61 +330,62 @@ let orb global_options build_options diffoscope keep_switches compiler_switches 
       [1, sw1; 2, sw2]
     | None ->
       list_init 2 (fun i ->
-          i, OpamSwitch.of_string (OpamSystem.mk_temp_dir ~prefix:"orb" ()))
-  in
-  if use_switches = None then
-    (seq switches (fun (num,sw) -> install_switch compiler_switches num sw);
-     clean_switches := (fun () ->
-         (try Sys.remove target with _ -> ());
-         if not keep_switches then
-           seq switches (fun (num,sw) ->
-               remove_switch num sw;
-               OpamFilename.rmdir
-                 (OpamFilename.Dir.of_string (OpamSwitch.to_string sw)))
-         else
-           log "Switches are %s" (OpamStd.List.to_string (fun (num, sw) ->
-               Printf.sprintf "#%d - %s" num (OpamSwitch.to_string sw)) switches)))
-  else
-    seq switches (fun (num, sw) -> update_switch_env num sw);
+          i, OpamSwitch.of_string (OpamSystem.mk_temp_dir ~prefix:"orb" ())) *)
+  let switch = OpamSwitch.of_string (OpamSystem.mk_temp_dir ~prefix:"orb" ()) in
+  if use_switches = None then begin
+    install_switch compiler_switches 0 switch;
+    clean_switches := (fun () ->
+        (try Sys.remove target with _ -> ());
+        if not keep_switches then begin
+          remove_switch 0 switch;
+          OpamFilename.rmdir
+            (OpamFilename.Dir.of_string (OpamSwitch.to_string switch))
+        end else
+          log "Switch is %s" (OpamSwitch.to_string switch))
+  end else
+    update_switch_env 0 switch;
   log "environments extended, installing";
-  (try
-     seq switches (fun (num,sw) -> install num sw atoms_or_locals)
-   with
-     (OpamStd.Sys.Exit _) as e -> !clean_switches (); raise e);
+  (try install 0 switch atoms_or_locals
+   with (OpamStd.Sys.Exit _) as e -> !clean_switches (); raise e);
   log "installed";
-  let tracking_maps =
-    List.map (fun (_,sw) -> tracking_maps sw atoms_or_locals) switches
-  in
+  let tracking_map = tracking_maps switch atoms_or_locals in
   (* calculate tracking maps *)
-  let final_map =
-    let tr1, tr2 = get2 tracking_maps in
+(*  let final_map =
     diff_map tr1 tr2
-  in
-  if OpamPackage.Map.is_empty final_map then begin
-    log "%s" (OpamConsole.colorise `green "It is reproductible!!!");
+    in *)
+  (*  if OpamPackage.Map.is_empty final_map then begin *)
+
+  log "%s" (OpamConsole.colorise `green "It is reproductible!!!");
     (* output build info:
-       - opam package versions (including compiler)
-       - environment variable(s)
+       - environment variable(s) - SOURCE_DATE_EPOCH / BUILD_PATH
        - host system information
        - host system packages (only used ines, conf-*, depext raja working on)
        - hashes of binaries
-       - opam repository git revision!?
+       - opam repository git revision!? (and other remotes)
+         - we have the opam repo revisions, we don't need opam package versions
+         -> as long as the opam solver is deterministic
+       - if opam repository would be immutable, we wouldn't need (the default)
+         - but then we'd need concrete versions
 
        goal is that based on only the build info (and opam), it can be verified
-       by an independent piece of software.
+         by an independent piece of software.
+       0 read build_info
+       1 setup source in the right spots, set env vars
+       2 configure opam repository/ies
+       3 opam install package
+       4 record build_info, compare against incoming build_info
     *)
-    let tr1 = List.hd tracking_maps in
     log "%s" (OpamConsole.colorise `green "BUILD INFO");
     OpamPackage.Map.iter (fun k v ->
         log "package %s: v %s"
           (OpamPackage.to_string k) (OpamFile.Changes.write_to_string v)
-      ) tr1
-  end else
+      ) tracking_map ;
+(*  end else
     (log "There are some %s\n%s"
        (OpamConsole.colorise `red "mismatching hashes")
        (OpamPackage.Map.to_string
           (OpamStd.String.Map.to_string string_of_diff) final_map);
-     OpamStd.Option.iter (generate_diffs root switches final_map) diffoscope);
+     OpamStd.Option.iter (generate_diffs root switches final_map) diffoscope); *)
   !clean_switches ()
 
 (** CLI *)
