@@ -360,9 +360,26 @@ let orb global_options build_options diffoscope keep_switches compiler_switches 
     let tr1, tr2 = get2 tracking_maps in
     diff_map tr1 tr2
   in
-  if OpamPackage.Map.is_empty final_map then
-    log "%s" (OpamConsole.colorise `green "It is reproductible!!!")
-  else
+  if OpamPackage.Map.is_empty final_map then begin
+    log "%s" (OpamConsole.colorise `green "It is reproductible!!!");
+    (* output build info:
+       - opam package versions (including compiler)
+       - environment variable(s)
+       - host system information
+       - host system packages (only used ines, conf-*, depext raja working on)
+       - hashes of binaries
+       - opam repository git revision!?
+
+       goal is that based on only the build info (and opam), it can be verified
+       by an independent piece of software.
+    *)
+    let tr1 = List.hd tracking_maps in
+    log "%s" (OpamConsole.colorise `green "BUILD INFO");
+    OpamPackage.Map.iter (fun k v ->
+        log "package %s: v %s"
+          (OpamPackage.to_string k) (OpamFile.Changes.write_to_string v)
+      ) tr1
+  end else
     (log "There are some %s\n%s"
        (OpamConsole.colorise `red "mismatching hashes")
        (OpamPackage.Map.to_string
