@@ -321,7 +321,8 @@ let orb global_options build_options diffoscope keep_switches compiler_switches 
   (match compiler_switches, use_switches with
    | None, None -> OpamStateConfig.update ~unlock_base:true ();
    | _ -> ());
-(*  let switches =
+
+  (*  let switches =
     match use_switches with
     | Some (sw1, sw2) ->
       OpamConsole.note "Use switches %s and %s"
@@ -345,9 +346,11 @@ let orb global_options build_options diffoscope keep_switches compiler_switches 
   end else
     update_switch_env 0 switch;
   log "environments extended, installing";
+
   (try install 0 switch atoms_or_locals
    with (OpamStd.Sys.Exit _) as e -> !clean_switches (); raise e);
   log "installed";
+
   let tracking_map = tracking_maps switch atoms_or_locals in
   (* calculate tracking maps *)
 (*  let final_map =
@@ -374,12 +377,24 @@ let orb global_options build_options diffoscope keep_switches compiler_switches 
        2 configure opam repository/ies
        3 opam install package
        4 record build_info, compare against incoming build_info
+
+       using opam, we actually can:
+       - export switch
+       - record changes above
+       - ?export buildpath / environment?
+
+       on rebuild:
+       - import switch
+       - install <pkg>
+       - record changes as above, and compare with recorded build_info
     *)
-    log "%s" (OpamConsole.colorise `green "BUILD INFO");
-    OpamPackage.Map.iter (fun k v ->
-        log "package %s: v %s"
-          (OpamPackage.to_string k) (OpamFile.Changes.write_to_string v)
-      ) tracking_map ;
+  log "%s" (OpamConsole.colorise `green "BUILD INFO");
+  OpamPackage.Map.iter (fun k v ->
+      log "package %s: v %s"
+        (OpamPackage.to_string k) (OpamFile.Changes.write_to_string v)
+    ) tracking_map ;
+  (* switch export - make a full one *)
+  OpamSwitchCommand.export ~switch ~full:true None;
 (*  end else
     (log "There are some %s\n%s"
        (OpamConsole.colorise `red "mismatching hashes")
