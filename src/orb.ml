@@ -80,23 +80,23 @@ let target = "/opt/share/ocaml"
 
 let add_env =
   let variables = [
-(*    "SOURCE_DATE_EPOCH", OpamParserTypes.Eq, string_of_float (Unix.time ()),
-      Some "Reproducible builds date" ; *)
+    "SOURCE_DATE_EPOCH", OpamParserTypes.Eq, string_of_float (Unix.time ()),
+    Some "Reproducible builds date" ;
   ] in
-  fun switch gt st ->
+  fun _switch gt st ->
     let env = OpamFile.Switch_config.env st.switch_config in
-    let value = target ^ "=" ^ OpamSwitch.to_string switch in
+(*    let value = target ^ "=" ^ OpamSwitch.to_string switch in
     log "BPPM is %s!" (OpamConsole.colorise `green value);
     let prefix_map =
       "BUILD_PATH_PREFIX_MAP", OpamParserTypes.Eq,
       value, Some "Build path prefix map"
-    in
+      in *)
     let to_add =
       List.fold_left (fun swc v ->
           let s,_,_,_ = v in
           match OpamStd.List.find_opt (fun (s',_,_,_) -> s = s') env with
           | Some _ -> swc
-          | None -> v::swc) [] (prefix_map :: variables)
+          | None -> v::swc) [] (* prefix_map :: *) variables
     in
     let switch_config =
       OpamFile.Switch_config.with_env (to_add @ env) st.switch_config
@@ -175,10 +175,11 @@ let install num switch atoms_or_locals =
   Sys.remove target;
   drop_states ~gt ~rt ~st ()
 
-let export switch =
+let export name switch =
   OpamGlobalState.with_ `Lock_none @@ fun gt ->
   OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
-  OpamSwitchCommand.export rt ~switch ~full:true None;
+  let switch_out = OpamFile.make (OpamFilename.of_string name) in
+  OpamSwitchCommand.export rt ~switch ~full:true (Some switch_out);
   drop_states ~gt ~rt ()
 
 let tracking_maps switch atoms_or_locals =
@@ -308,6 +309,21 @@ let remove_switch num switch =
   log ~num "Switch %s removed"
     (OpamSwitch.to_string switch |> OpamConsole.colorise `blue)
 
+let write_file file value =
+  let filename = OpamFilename.to_string file in
+  let oc =
+    OpamFilename.(mkdir (dirname file));
+    try open_out_bin filename with Sys_error _ -> raise (OpamSystem.File_not_found filename)
+  in
+  try
+    Unix.lockf (Unix.descr_of_out_channel oc) Unix.F_LOCK 0;
+    output_string oc value;
+    close_out oc;
+  with e ->
+    OpamStd.Exn.finalise e @@ fun () ->
+    close_out oc; OpamFilename.remove file
+
+
 (* Main function *)
 let orb global_options build_options diffoscope keep_switches compiler_switches use_switches
     atoms_or_locals =
@@ -370,13 +386,17 @@ let orb global_options build_options diffoscope keep_switches compiler_switches 
        - recorded changes above (tracking_map)
        - ?export buildpath / environment?
     *)
+  let tmpdir = OpamSystem.mk_temp_dir ~prefix:"buildinfo" () in
   log "%s" (OpamConsole.colorise `green "BUILD INFO");
-  OpamPackage.Map.iter (fun k v ->
-      log "package %s: v %s"
-        (OpamPackage.to_string k) (OpamFile.Changes.write_to_string v)
-    ) tracking_map ;
+  OpamPackage.Map.iter (fun pkg map ->
+      let value = OpamFile.Changes.write_to_string map in
+      let fn = OpamFilename.(create (Dir.of_string tmpdir) (Base.of_string (OpamPackage.Name.to_string pkg.name ^ ".buildinfo")))
+      in
+      write_file fn value)
+    tracking_map;
+
   (* switch export - make a full one *)
-  export switch;
+  export (tmpdir ^ "repo.export") switch;
 (*  end else
     (log "There are some %s\n%s"
        (OpamConsole.colorise `red "mismatching hashes")
