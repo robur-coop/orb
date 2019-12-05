@@ -80,8 +80,8 @@ let target = "/opt/share/ocaml"
 
 let add_env =
   let variables = [
-    "SOURCE_DATE_EPOCH", OpamParserTypes.Eq, string_of_float (Unix.time ()),
-    Some "Reproducible builds date" ;
+(*    "SOURCE_DATE_EPOCH", OpamParserTypes.Eq, string_of_float (Unix.time ()),
+      Some "Reproducible builds date" ; *)
   ] in
   fun _switch gt st ->
     let env = OpamFile.Switch_config.env st.switch_config in
@@ -108,7 +108,7 @@ let add_env =
     st
 
 (** Steps *)
-let install_switch compiler_switch num switch =
+let install_switch compiler_switch switch =
   OpamGlobalState.with_ `Lock_write @@ fun gt ->
   OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
   let gt, st =
@@ -125,15 +125,15 @@ let install_switch compiler_switch num switch =
       OpamSwitchCommand.set_compiler st [pkg, None]
   in
   let st = add_env switch gt st in
-  log ~num "Switch %s created!"
+  log "Switch %s created!"
     (OpamConsole.colorise `green (OpamSwitch.to_string switch));
   drop_states ~gt ~rt ~st ()
 
-let update_switch_env num switch =
+let update_switch_env switch =
   OpamGlobalState.with_ `Lock_write @@ fun gt ->
   if not (OpamGlobalState.switch_exists gt switch) then
     (drop_states ~gt ();
-     exit_error `Not_found ~num "Switch %s doesn't exist"
+     exit_error `Not_found "Switch %s doesn't exist"
        (OpamSwitch.to_string switch |> OpamConsole.colorise `underline))
   else
     OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
@@ -141,8 +141,8 @@ let update_switch_env num switch =
     let st = add_env switch gt st in
     drop_states ~gt ~rt ~st ()
 
-let install num switch atoms_or_locals =
-  log ~num "Install start";
+let install switch atoms_or_locals =
+  log "Install start";
   if Sys.file_exists target then
     exit_error `Not_found
       "target of build path prefix map %s already exists" target;
@@ -162,15 +162,15 @@ let install num switch atoms_or_locals =
         %% OpamPackage.names_of_packages st.installed)
     in
     if OpamPackage.Name.Set.is_empty installed then st else
-      (log ~num "Remove previsouly installed packages: %s"
+      (log "Remove previsouly installed packages: %s"
          (OpamPackage.Name.Set.to_string installed);
        OpamClient.remove st ~autoremove:false ~force:false atoms)
   in
   let st =
-    log ~num "Install deps of %s" (OpamFormula.string_of_atoms atoms);
+    log "Install deps of %s" (OpamFormula.string_of_atoms atoms);
     OpamClient.install st atoms ~deps_only:true
   in
-  log ~num "Install %s" (OpamFormula.string_of_atoms atoms);
+  log "Install %s" (OpamFormula.string_of_atoms atoms);
   let st = OpamClient.install st atoms in
   Sys.remove target;
   drop_states ~gt ~rt ~st ()
@@ -323,7 +323,6 @@ let write_file file value =
     OpamStd.Exn.finalise e @@ fun () ->
     close_out oc; OpamFilename.remove file
 
-
 (* Main function *)
 let orb global_options build_options diffoscope keep_switches compiler_switches use_switches
     atoms_or_locals =
@@ -356,7 +355,7 @@ let orb global_options build_options diffoscope keep_switches compiler_switches 
           i, OpamSwitch.of_string (OpamSystem.mk_temp_dir ~prefix:"orb" ())) *)
   let switch = OpamSwitch.of_string (OpamSystem.mk_temp_dir ~prefix:"orb" ()) in
   if use_switches = None then begin
-    install_switch compiler_switches 0 switch;
+    install_switch compiler_switches switch;
     clean_switches := (fun () ->
         (try Sys.remove target with _ -> ());
         if not keep_switches then begin
@@ -366,10 +365,10 @@ let orb global_options build_options diffoscope keep_switches compiler_switches 
         end else
           log "Switch is %s" (OpamSwitch.to_string switch))
   end else
-    update_switch_env 0 switch;
+    update_switch_env switch;
   log "environments extended, installing";
 
-  (try install 0 switch atoms_or_locals
+  (try install switch atoms_or_locals
    with (OpamStd.Sys.Exit _) as e -> !clean_switches (); raise e);
   log "installed";
 
@@ -388,15 +387,27 @@ let orb global_options build_options diffoscope keep_switches compiler_switches 
     *)
   let tmpdir = OpamSystem.mk_temp_dir ~prefix:"buildinfo" () in
   log "%s" (OpamConsole.colorise `green "BUILD INFO");
+  let filename post =
+    OpamFilename.(create (Dir.of_string tmpdir) (Base.of_string post))
+  in
   OpamPackage.Map.iter (fun pkg map ->
       let value = OpamFile.Changes.write_to_string map in
-      let fn = OpamFilename.(create (Dir.of_string tmpdir) (Base.of_string (OpamPackage.Name.to_string pkg.name ^ ".buildinfo")))
+      let fn = filename (OpamPackage.Name.to_string pkg.name ^ ".buildinfo")
       in
       write_file fn value)
     tracking_map;
 
   (* switch export - make a full one *)
-  export (tmpdir ^ "repo.export") switch;
+  export (tmpdir ^ "/repo.export") switch;
+
+  (* environment variables -- SOURCE_DATE_EPOCH and switch name for now *)
+  let env = [
+    (*    "SOURCE_DATE_EPOCH", epoch ; *)
+    "BUILD_PATH", OpamSwitch.to_string switch ;
+    (* ARCH/OS/OS-FAMILY/OS-DISTRIBUTION/OS-VERSION *)
+  ] in
+  write_file (filename "env")
+    (String.concat "\n" (List.map (fun (k, v) -> k ^ "=" ^ v) env));
 (*  end else
     (log "There are some %s\n%s"
        (OpamConsole.colorise `red "mismatching hashes")
