@@ -175,6 +175,12 @@ let install num switch atoms_or_locals =
   Sys.remove target;
   drop_states ~gt ~rt ~st ()
 
+let export switch =
+  OpamGlobalState.with_ `Lock_none @@ fun gt ->
+  OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
+  OpamSwitchCommand.export rt ~switch ~full:true None;
+  drop_states ~gt ~rt ()
+
 let tracking_maps switch atoms_or_locals =
   OpamGlobalState.with_ `Lock_none @@ fun gt ->
   OpamSwitchState.with_ `Lock_none ~switch gt @@ fun st ->
@@ -360,33 +366,9 @@ let orb global_options build_options diffoscope keep_switches compiler_switches 
 
   log "%s" (OpamConsole.colorise `green "It is reproductible!!!");
     (* output build info:
-       - environment variable(s) - SOURCE_DATE_EPOCH / BUILD_PATH
-       - host system information
-       - host system packages (only used ines, conf-*, depext raja working on)
-       - hashes of binaries
-       - opam repository git revision!? (and other remotes)
-         - we have the opam repo revisions, we don't need opam package versions
-         -> as long as the opam solver is deterministic
-       - if opam repository would be immutable, we wouldn't need (the default)
-         - but then we'd need concrete versions
-
-       goal is that based on only the build info (and opam), it can be verified
-         by an independent piece of software.
-       0 read build_info
-       1 setup source in the right spots, set env vars
-       2 configure opam repository/ies
-       3 opam install package
-       4 record build_info, compare against incoming build_info
-
-       using opam, we actually can:
        - export switch
-       - record changes above
+       - recorded changes above (tracking_map)
        - ?export buildpath / environment?
-
-       on rebuild:
-       - import switch
-       - install <pkg>
-       - record changes as above, and compare with recorded build_info
     *)
   log "%s" (OpamConsole.colorise `green "BUILD INFO");
   OpamPackage.Map.iter (fun k v ->
@@ -394,7 +376,7 @@ let orb global_options build_options diffoscope keep_switches compiler_switches 
         (OpamPackage.to_string k) (OpamFile.Changes.write_to_string v)
     ) tracking_map ;
   (* switch export - make a full one *)
-  OpamSwitchCommand.export ~switch ~full:true None;
+  export switch;
 (*  end else
     (log "There are some %s\n%s"
        (OpamConsole.colorise `red "mismatching hashes")
