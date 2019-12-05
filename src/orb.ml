@@ -76,7 +76,6 @@ let drop_states ?gt ?rt ?st () =
   OpamStd.Option.iter OpamRepositoryState.drop rt;
   OpamStd.Option.iter OpamGlobalState.drop gt
 
-let target = "/opt/share/ocaml"
 
 let add_env =
   let variables = [
@@ -85,7 +84,7 @@ let add_env =
   ] in
   fun _switch gt st ->
     let env = OpamFile.Switch_config.env st.switch_config in
-(*    let value = target ^ "=" ^ OpamSwitch.to_string switch in
+(*  let value = target ^ "=" ^ OpamSwitch.to_string switch in
     log "BPPM is %s!" (OpamConsole.colorise `green value);
     let prefix_map =
       "BUILD_PATH_PREFIX_MAP", OpamParserTypes.Eq,
@@ -143,10 +142,6 @@ let update_switch_env switch =
 
 let install switch atoms_or_locals =
   log "Install start";
-  if Sys.file_exists target then
-    exit_error `Not_found
-      "target of build path prefix map %s already exists" target;
-  Unix.symlink (OpamSwitch.to_string switch) target;
   OpamGlobalState.with_ `Lock_none @@ fun gt ->
   OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
   OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
@@ -172,7 +167,6 @@ let install switch atoms_or_locals =
   in
   log "Install %s" (OpamFormula.string_of_atoms atoms);
   let st = OpamClient.install st atoms in
-  Sys.remove target;
   drop_states ~gt ~rt ~st ()
 
 let export name switch =
@@ -357,7 +351,6 @@ let orb global_options build_options diffoscope keep_switches compiler_switches 
   if use_switches = None then begin
     install_switch compiler_switches switch;
     clean_switches := (fun () ->
-        (try Sys.remove target with _ -> ());
         if not keep_switches then begin
           remove_switch 0 switch;
           OpamFilename.rmdir
