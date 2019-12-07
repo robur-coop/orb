@@ -185,8 +185,11 @@ let tracking_maps switch atoms_or_locals =
   let st, packages =
     let p =
       let _, atoms = OpamAuxCommands.resolve_locals atoms_or_locals in
-      log "tracking map %d atoms" (List.length atoms);
-      let packages =  OpamFormula.packages_of_atoms st.packages atoms in
+      log "tracking map %d atoms (package set %d - %d packages)"
+        (List.length atoms)
+        (OpamPackage.Set.cardinal st.installed)
+        (OpamPackage.Set.cardinal st.packages);
+      let packages =  OpamFormula.packages_of_atoms st.installed atoms in
       log "tracking map %d packages" (OpamPackage.Set.cardinal packages);
       let ifer = OpamPackage.Set.inter st.installed packages in
       log "tracking map %d packages later" (OpamPackage.Set.cardinal ifer);
