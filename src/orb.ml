@@ -135,7 +135,8 @@ let install_switch epoch ?repos compiler_pin compiler_version switch =
     OpamSwitchCommand.install gt ~rt ~local_compiler:true ?repos
       ~packages:[] ~update_config:false switch
   in
-  let st = add_env switch epoch gt st in
+  log "Switch %s created!"
+    (OpamConsole.colorise `green (OpamSwitch.to_string switch));
   let st = match compiler_pin, compiler_version with
     | None, None -> st
     | Some path, None ->
@@ -154,8 +155,7 @@ let install_switch epoch ?repos compiler_pin compiler_version switch =
       exit_error `Bad_arguments
         "Both compiler-pin and compiler provided, choose one.";
   in
-  log "Switch %s created!"
-    (OpamConsole.colorise `green (OpamSwitch.to_string switch));
+  let st = add_env switch epoch gt st in
   drop_states ~gt ~rt ~st ()
 
 let update_switch_env epoch switch =
