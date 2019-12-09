@@ -360,11 +360,11 @@ let fork lst f =
            | Unix.WSIGNALED e -> Printf.sprintf "signal %d" e
            | Unix.WSTOPPED e -> Printf.sprintf "stop %d" e) err))
 
-let export name switch =
+let export name =
   OpamGlobalState.with_ `Lock_none @@ fun gt ->
   OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
   let switch_out = OpamFile.make (OpamFilename.of_string name) in
-  OpamSwitchCommand.export rt ~switch ~full:true (Some switch_out);
+  OpamSwitchCommand.export rt ~full:true (Some switch_out);
   drop_states ~gt ~rt ()
 
 let generate_diffs root1 root2 final_map dir =
@@ -483,7 +483,7 @@ let orb global_options build_options diffoscope keep_build twice compiler_pin co
 
   output_buildinfo bidir tracking_map;
   (* switch export - make a full one *)
-  export (bidir ^ "/repo.export") switch';
+  export (bidir ^ "/repo.export");
   (* environment variables -- SOURCE_DATE_EPOCH and switch name for now *)
   (* they're partially used for rebuilding, partially as metadata *)
   let env = [
