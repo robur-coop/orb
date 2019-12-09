@@ -1,20 +1,5 @@
-(library
- (name orb_lib)
- (public_name orb.lib)
- (wrapped false)
- (modules orb_lib)
- (libraries opam-client))
-
 (executable
  (name orb)
- (modules orb)
  (public_name orb)
- (libraries opam-client orb.lib)
-)
-
-(executable
- (name rebuild)
- (modules rebuild)
- (public_name rebuild)
- (libraries opam-client orb.lib)
+ (libraries opam-client)
 )
