@@ -145,7 +145,6 @@ let install_switch epoch ?repos compiler_pin compiler_version switch =
       log "Pinned compiler to %s" path;
       st
     | None, Some version ->
-      (* TODO somehow does not work properly, getting float_of_string exception(s) *)
       let version = OpamPackage.Version.of_string version in
       let pkg = OpamPackage.Name.of_string "ocaml" in
       let st = OpamClient.PIN.pin ~action:false st pkg (`Version version) in
