@@ -135,26 +135,26 @@ let install_switch epoch ?repos compiler_pin compiler_version switch =
     OpamSwitchCommand.install gt ~rt ~local_compiler:true ?repos
       ~packages:[] ~update_config:false switch
   in
+  let st = add_env switch epoch gt st in
   let st = match compiler_pin, compiler_version with
     | None, None -> st
     | Some path, None ->
       let src = `Source (OpamUrl.parse ("git+file://" ^ path)) in
       let pkg = OpamPackage.Name.of_string "ocaml-variants" in
-      let st = OpamClient.PIN.pin st pkg src in
+      let st = OpamClient.PIN.pin ~action:false st pkg src in
       log "Pinned compiler to %s" path;
-      OpamSwitchCommand.set_compiler st [pkg, None]
+      st
     | None, Some version ->
+      (* TODO somehow does not work properly, getting float_of_string exception(s) *)
       let version = OpamPackage.Version.of_string version in
-      log "Pin compiler to ocaml.%s"
-        (OpamPackage.Version.to_string version);
       let pkg = OpamPackage.Name.of_string "ocaml" in
-      let st = OpamClient.PIN.pin st pkg (`Version version) in
-      OpamSwitchCommand.set_compiler st [pkg, Some version]
+      let st = OpamClient.PIN.pin ~action:false st pkg (`Version version) in
+      log "Pinned compiler to ocaml.%s" (OpamPackage.Version.to_string version);
+      st
     | Some _, Some _ ->
       exit_error `Bad_arguments
         "Both compiler-pin and compiler provided, choose one.";
   in
-  let st = add_env switch epoch gt st in
   log "Switch %s created!"
     (OpamConsole.colorise `green (OpamSwitch.to_string switch));
   drop_states ~gt ~rt ~st ()
@@ -486,10 +486,11 @@ let orb global_options build_options diffoscope keep_build twice compiler_pin co
   (* switch export - make a full one *)
   export (bidir ^ "/repo.export") switch';
   (* environment variables -- SOURCE_DATE_EPOCH and switch name for now *)
+  (* they're partially used for rebuilding, partially as metadata *)
   let env = [
     "SOURCE_DATE_EPOCH", string_of_float epoch ;
     "BUILD_PATH", OpamSwitch.to_string switch' ;
-    (* ARCH/OS/OS-FAMILY/OS-DISTRIBUTION/OS-VERSION *)
+    (* ARCH/OS/OS-FAMILY/OS-DISTRIBUTION/OS-VERSION/TIMESTAMP of build *)
   ] in
   write_file OpamFilename.(create (Dir.of_string bidir) (Base.of_string "env"))
     (String.concat "\n" (List.map (fun (k, v) -> k ^ "=" ^ v) env));
@@ -541,7 +542,7 @@ let rebuild global_options build_options diffoscope keep_build build_info =
       List.map (fun a -> `Atom (a.OpamPackage.name, None))
           (OpamPackage.Set.elements packages)
     in
-    (* TODO use roots from export for packages *)
+    (* TODO output build environment *)
     let tracking_map = tracking_maps switch atoms_or_locals in
     log "got tracking maps";
     log "%s" (OpamConsole.colorise `green "BUILD INFO");
