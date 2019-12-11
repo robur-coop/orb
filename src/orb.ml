@@ -8,6 +8,11 @@
 (*                                                                        *)
 (**************************************************************************)
 
+(* TODO record missing inputs:
+   - host system packages (that are relevant)
+   - cpu features etc. for cpuid
+*)
+
 open OpamStateTypes
 
 (** Utils *)
@@ -126,16 +131,22 @@ let switch_filename dir name =
 
 let convert_date x = string_of_int (int_of_float x)
 
+let custom_env = [
+  "OS", OpamSysPoll.os ();
+  "OS_DISTRIBUTION", OpamSysPoll.os_distribution ();
+  "OS_VERSION", OpamSysPoll.os_version ();
+  "OS_FAMILY", OpamSysPoll.os_family ();
+]
+
 let create_env epoch dir =
-  let opt key = function None -> [] | Some x -> [ key, x ] in
-  [ "BUILD_PATH", dir ;
-    "SOURCE_DATE_EPOCH", convert_date epoch ;
-    "BUILD_DATE", convert_date (Unix.time ()) ;
-  ] @ opt "ARCH" (OpamSysPoll.arch ())
-  @ opt "OS" (OpamSysPoll.os ())
-  @ opt "OS_DISTRIBUTION" (OpamSysPoll.os_distribution ())
-  @ opt "OS_VERSION" (OpamSysPoll.os_version ())
-  @ opt "OS_FAMILY" (OpamSysPoll.os_family ())
+  [
+    "SWITCH_PATH", dir;
+    "SOURCE_DATE_EPOCH", convert_date epoch;
+    "BUILD_DATE", convert_date (Unix.time ());
+  ] @
+  List.fold_left
+    (fun acc (k, v) -> match v with None -> acc | Some v -> (k,v)::acc)
+    [] custom_env
 
 let env_to_string env =
   String.concat "\n" ("" :: List.map (fun (k, v) -> k ^ "=" ^ v) env)
@@ -145,10 +156,18 @@ let env_of_string str =
   List.fold_left (fun acc line ->
       match String.split_on_char '=' line with
       | [ key ; value ] -> (key, value) :: acc
-      | _ ->
-        OpamConsole.msg "bad environment %s" line;
-        acc)
+      | _ -> log "bad environment %s" line ; acc)
     [] lines
+
+let env_matches env =
+  (* TODO may relax e.g. OS_VERSION is DISTRIBUTION is detailed enough *)
+  let opt_compare key v =
+    match v, List.assoc_opt key env with
+    | None, _ -> log "key %s not available" key ; true
+    | _, None -> log "key %s not found in environment" key ; true
+    | Some v, Some v' -> String.equal v v'
+  in
+  List.for_all (fun (k, v) -> opt_compare k v) custom_env
 
 let add_env _switch epoch gt st =
   let env = OpamFile.Switch_config.env st.OpamStateTypes.switch_config in
@@ -368,20 +387,22 @@ let output_buildinfo_and_env dir name map env =
     let rec fn n =
       let filename = post ^ "." ^ string_of_int n in
       let file = Filename.concat dir filename in
-      if Sys.file_exists file then fn (succ n) else filename
+      if Sys.file_exists file then fn (succ n) else filename, n
     in
-    OpamFilename.(create (Dir.of_string dir) (Base.of_string (fn 0)))
+    let file, gen = fn 0 in
+    OpamFilename.(create (Dir.of_string dir) (Base.of_string file)), gen
   in
   OpamPackage.Map.iter (fun pkg map ->
       let value = OpamFile.Changes.write_to_string map in
-      let fn = filename (OpamPackage.Name.to_string pkg.name ^ dot_hash) in
+      let fn, _ = filename (OpamPackage.Name.to_string pkg.name ^ dot_hash) in
       log "writing %s" (OpamFilename.to_string fn);
       write_file fn value)
     map;
-  let fn = filename (name ^ dot_env) in
-  write_file fn (env_to_string env)
+  let fn, gen = filename (name ^ dot_env) in
+  write_file fn (env_to_string env);
+  gen
 
-let find_build_dir ?(generation = 0) dir =
+let find_build_dir generation dir =
   let builds =
     List.filter (fun t -> OpamFilename.check_suffix t dot_build)
       (OpamFilename.files (OpamFilename.Dir.of_string dir))
@@ -393,14 +414,10 @@ let find_build_dir ?(generation = 0) dir =
       builds
   with
   | Some x -> Some (OpamFilename.to_string x)
-  | None -> match builds with [] -> None | x :: _ -> Some (OpamFilename.to_string x)
+  | None -> None
 
-let copy_build_dir dir switch =
-  let rec bdir c =
-    let dir' = Printf.sprintf "%s/%d%s" dir c dot_build in
-    if Sys.file_exists dir' then bdir (succ c) else dir'
-  in
-  let target = bdir 0 in
+let copy_build_dir dir generation switch =
+  let target = Printf.sprintf "%s/%d%s" dir generation dot_build in
   log "preserving build dir in %s" target;
   OpamFilename.copy_dir
     ~src:(OpamFilename.Dir.of_string (OpamSwitch.to_string switch))
@@ -490,7 +507,9 @@ let compare_builds tracking_map tracking_map' build1st build2nd diffoscope =
        (OpamConsole.colorise `red "mismatching hashes")
        (OpamPackage.Map.to_string
           (OpamStd.String.Map.to_string string_of_diff) final_map);
-     OpamStd.Option.iter (generate_diffs build1st build2nd final_map) diffoscope)
+     match build1st with
+     | None -> log "no previous build dir available, couldn't copy and run diffoscope"
+     | Some dir -> OpamStd.Option.iter (generate_diffs dir build2nd final_map) diffoscope)
 
 let project_name_from_arg = function
   | `Atom (name, _) :: _ -> OpamPackage.Name.to_string name
@@ -505,6 +524,53 @@ let project_name_from_dir dir = (* the first <name>.opam-switch *)
   with
   | None -> failwith "couldn't find switch"
   | Some t -> OpamFilename.(Base.to_string (basename (chop_extension t)))
+
+let find_env dir =
+  let envs =
+    List.filter
+      (fun t -> OpamFilename.(check_suffix (chop_extension t) dot_env))
+      (OpamFilename.files (OpamFilename.Dir.of_string dir))
+  in
+  let rec good_env = function
+    | [] -> failwith "no environment found"
+    | file :: files ->
+      let env = env_of_string (read_file file) in
+      if env_matches env then begin
+        log "environment %s matches, using it" (OpamFilename.to_string file);
+        env, file
+      end else begin
+        log "environment %s does not match" (OpamFilename.to_string file);
+        good_env files
+      end
+  in
+  let env, filename = good_env envs in
+  let name = OpamFilename.(Base.to_string (basename (chop_extension (chop_extension filename)))) in
+  let generation =
+    match OpamStd.String.rcut_at (OpamFilename.to_string filename) '.' with
+    | None -> log "no generation found in %s" (OpamFilename.to_string filename); 0
+    | Some (_, x) ->
+      log "generation %s" x;
+      int_of_string x
+  in
+  name, generation, env
+
+let rebuild ~sw ~bidir ~name epoch ~keep_build =
+  let switch = OpamSwitch.of_string sw in
+  let switch_in = switch_filename bidir name in
+  let packages = import_switch epoch switch (Some switch_in) in
+  let atoms_or_locals =
+    List.map (fun a -> `Atom (a.OpamPackage.name, None))
+      (OpamPackage.Set.elements packages)
+  in
+  log "switch imported (installed stuff)";
+  let tracking_map = tracking_maps switch atoms_or_locals in
+  log "tracking map";
+  log "%s" (OpamConsole.colorise `green "BUILD INFO");
+  let env = create_env epoch sw in
+  let generation = output_buildinfo_and_env bidir name tracking_map env in
+  let build2nd = if keep_build then copy_build_dir bidir generation switch else sw in
+  log "wrote tracking map";
+  tracking_map, build2nd, packages
 
 (* Main function *)
 let orb global_options build_options diffoscope keep_build twice compiler_pin compiler switch
@@ -530,30 +596,18 @@ let orb global_options build_options diffoscope keep_build twice compiler_pin co
   let bidir = OpamSystem.mk_temp_dir ~prefix:("bi-" ^ name) () in
   log "%s" (OpamConsole.colorise `green "BUILD INFO");
   let env = create_env epoch (OpamSwitch.to_string switch') in
-  output_buildinfo_and_env bidir name tracking_map env;
+  let generation = output_buildinfo_and_env bidir name tracking_map env in
   (* switch export - make a full one *)
   export switch' bidir name;
   let build1st =
     if twice || keep_build
-    then Some (copy_build_dir bidir switch')
+    then Some (copy_build_dir bidir generation switch')
     else None
   in
   cleanup ();
-  if twice then begin
-    let build1st = match build1st with None -> assert false | Some x -> x in
-    let switch' = OpamSwitch.of_string sw in
-    let switch_in = switch_filename bidir name in
-    let _ = import_switch epoch switch' (Some switch_in) in
-    log "switch imported (installed stuff)";
-    let build2nd = if keep_build then copy_build_dir bidir switch' else sw in
-    let tracking_map' = tracking_maps switch' atoms_or_locals in
-    log "tracking map";
-    log "%s" (OpamConsole.colorise `green "BUILD INFO");
-    let env' = create_env epoch sw in
-    output_buildinfo_and_env bidir name tracking_map' env';
-    log "wrote tracking map";
+  if twice then
+    let tracking_map', build2nd, _ = rebuild ~sw ~bidir ~name epoch ~keep_build:true in
     compare_builds tracking_map tracking_map' build1st build2nd diffoscope
-  end
 
 let rebuild global_options build_options diffoscope keep_build build_info =
   match build_info with
@@ -561,44 +615,21 @@ let rebuild global_options build_options diffoscope keep_build build_info =
   | Some dir ->
     common_start global_options build_options diffoscope;
     OpamStateConfig.update ~unlock_base:true ();
-    let name = project_name_from_dir dir in
-    let filename post =
-      OpamFilename.(create (Dir.of_string dir) (Base.of_string post))
-    in
-    let generation = 0 in
-    let env =
-      let fn = filename (Printf.sprintf "%s%s.%d" name dot_env generation) in
-      env_of_string (read_file fn)
-    in
-    let sw = List.assoc "BUILD_PATH" env in
-    let switch = OpamSwitch.of_string sw in
-    let switch_in = switch_filename dir name in
+    let name, generation, env = find_env dir in
+    let sw = List.assoc "SWITCH_PATH" env in
     let epoch = float_of_string @@ List.assoc "SOURCE_DATE_EPOCH" env in
-    let packages = import_switch epoch switch (Some switch_in) in
-    log "switch imported (installed stuff) %d packages"
-      (OpamPackage.Set.cardinal packages);
-    let _my_build = if keep_build then copy_build_dir dir switch else sw in
-    let atoms_or_locals =
-      List.map (fun a -> `Atom (a.OpamPackage.name, None))
-          (OpamPackage.Set.elements packages)
+    let tracking_map_2nd, build2nd, packages =
+      rebuild ~sw ~bidir:dir ~name epoch ~keep_build
     in
-    let tracking_map = tracking_maps switch atoms_or_locals in
-    log "got tracking maps";
-    log "%s" (OpamConsole.colorise `green "BUILD INFO");
-    let env = create_env epoch sw in
-    output_buildinfo_and_env dir name tracking_map env;
-    let old_maps = OpamPackage.Set.fold (fun pkg acc ->
-        match
-          read_tracking_map ~generation dir
-            (OpamPackage.Name.to_string pkg.OpamPackage.name)
-        with
+    let tracking_map_1st = OpamPackage.Set.fold (fun pkg acc ->
+        match read_tracking_map ~generation dir (OpamPackage.Name.to_string pkg.OpamPackage.name) with
         | None -> log "no tracking map for %s found" (OpamPackage.Name.to_string pkg.OpamPackage.name); acc
         | Some tm -> OpamPackage.Map.add pkg tm acc)
         packages OpamPackage.Map.empty
     in
-    let old_build = match find_build_dir ~generation dir with None -> sw | Some y -> y in
-    log "comparing with old build dir %s" old_build;
-    compare_builds tracking_map old_maps sw old_build diffoscope
+    let build1st = find_build_dir generation dir in
+    log "comparing with old build dir %s" (match build1st with None -> "no" | Some x -> x);
+    compare_builds tracking_map_1st tracking_map_2nd build1st build2nd diffoscope
 
 (** CLI *)
 open Cmdliner
@@ -630,7 +661,7 @@ let orb_cmd =
   ]
   in
   let twice =
-    mk_flag ["twice"] "build twice, output differences"
+    mk_flag ["twice"] "build twice, output differences (implies --keep-build)"
   in
   let compiler_pin =
     mk_opt [ "compiler-pin" ] "[DIR]"
