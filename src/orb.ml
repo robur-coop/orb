@@ -404,18 +404,8 @@ let output_buildinfo_and_env dir name map env =
   gen
 
 let find_build_dir generation dir =
-  let builds =
-    List.filter (fun t -> OpamFilename.check_suffix t dot_build)
-      (OpamFilename.files (OpamFilename.Dir.of_string dir))
-  in
-  match List.find_opt (fun t ->
-      String.equal
-        OpamFilename.(Base.to_string (basename (chop_extension t)))
-        (string_of_int generation))
-      builds
-  with
-  | Some x -> Some (OpamFilename.to_string x)
-  | None -> None
+  let dir = Printf.sprintf "%s/%d%s" dir generation dot_build in
+  if Sys.file_exists dir then Some dir else None
 
 let copy_build_dir dir generation switch =
   let target = Printf.sprintf "%s/%d%s" dir generation dot_build in
