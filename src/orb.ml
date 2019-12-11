@@ -8,44 +8,12 @@
 (*                                                                        *)
 (**************************************************************************)
 
+open OpamStateTypes
+
 (** Utils *)
 let log fmt =
   let orb = OpamConsole.(colorise `bold "[ORB]" |> colorise `cyan) in
   OpamConsole.msg ("%s "^^fmt^^"\n") orb
-
-let remove_switch switch =
-  OpamGlobalState.with_ `Lock_write @@ fun gt ->
-  OpamGlobalState.drop @@
-  OpamSwitchCommand.remove ~confirm:false gt switch;
-  log "Switch %s removed"
-    (OpamSwitch.to_string switch |> OpamConsole.colorise `blue)
-
-let clean_switch = ref None
-
-let cleanup () =
-  log "cleaning up";
-  match !clean_switch with
-  | None -> ()
-  | Some switch ->
-    remove_switch switch;
-    OpamFilename.rmdir
-      (OpamFilename.Dir.of_string (OpamSwitch.to_string switch));
-    clean_switch := None
-
-let exit_error reason fmt =
-  cleanup ();
-  OpamConsole.error_and_exit reason fmt
-
-let reason_of_exit i =
-  let reasons = OpamStd.Sys.exit_codes in
-  match List.find_opt (fun (_, c) -> c = i) reasons with
-  | None -> `Internal_error
-  | Some (x, _) -> x
-
-let drop_states ?gt ?rt ?st () =
-  OpamStd.Option.iter OpamSwitchState.drop st;
-  OpamStd.Option.iter OpamRepositoryState.drop rt;
-  OpamStd.Option.iter OpamGlobalState.drop gt
 
 let read_file file =
   let filename = OpamFilename.to_string file in
@@ -75,6 +43,77 @@ let write_file file value =
   with e ->
     OpamStd.Exn.finalise e @@ fun () ->
     close_out oc; OpamFilename.remove file
+
+let remove_switch switch =
+  OpamGlobalState.with_ `Lock_write @@ fun gt ->
+  OpamGlobalState.drop @@
+  OpamSwitchCommand.remove ~confirm:false gt switch;
+  log "Switch %s removed"
+    (OpamSwitch.to_string switch |> OpamConsole.colorise `blue)
+
+let clean_switch = ref None
+
+let cleanup () =
+  log "cleaning up";
+  match !clean_switch with
+  | None -> ()
+  | Some switch ->
+    remove_switch switch;
+    OpamFilename.rmdir
+      (OpamFilename.Dir.of_string (OpamSwitch.to_string switch));
+    clean_switch := None
+
+let exit_error reason fmt =
+  cleanup ();
+  OpamConsole.error_and_exit reason fmt
+
+let get2 = function  s1::s2::[]-> s1, s2 | _ -> assert false
+
+let list_init len f =
+  let rec init_aux i n f =
+    if i >= n then []
+    else
+      let r = f i in
+      r :: init_aux (i+1) n f
+  in
+  init_aux 0 len f
+
+let seq l f =
+  List.iter f l
+
+let fork lst f =
+  let pids =
+    List.map (fun arg -> (* to be sure to have at least 1s of delay in tms *)
+        Unix.sleep 1;
+        match Unix.fork () with
+        | 0 -> (try f arg with OpamStd.Sys.Exit n -> exit n); exit 255
+        | pid -> pid) lst
+    |> OpamStd.IntSet.of_list
+  in
+  let w, err =
+    List.fold_left (fun (w,err) (p,e) ->
+        let w = p::w in
+        if e = Unix.WEXITED 255 then w, err else w, e::err)
+      ([],[])
+      (list_init (OpamStd.IntSet.cardinal pids) (fun _ -> Unix.wait ()))
+  in
+  let w = OpamStd.IntSet.of_list w in
+  let remaining = OpamStd.IntSet.Op.(pids -- w) in
+  if not (OpamStd.IntSet.is_empty remaining) then
+    exit_error `Not_found "Remaining pids %s"
+      (OpamStd.IntSet.to_string remaining);
+  if err <> [] then
+    exit_error `False
+      "Some subprocesses ended with a non-zero code: %s"
+      (OpamStd.Format.pretty_list (List.map (function
+           | Unix.WEXITED e -> Printf.sprintf "exit %d" e
+           | Unix.WSIGNALED e -> Printf.sprintf "signal %d" e
+           | Unix.WSTOPPED e -> Printf.sprintf "stop %d" e) err))
+
+let drop_states ?gt ?rt ?st () =
+  OpamStd.Option.iter OpamSwitchState.drop st;
+  OpamStd.Option.iter OpamRepositoryState.drop rt;
+  OpamStd.Option.iter OpamGlobalState.drop gt
 
 let add_env _switch epoch gt st =
   let env = OpamFile.Switch_config.env st.OpamStateTypes.switch_config in
@@ -316,49 +355,6 @@ let copy_build_dir dir switch =
     ~src:(OpamFilename.Dir.of_string (OpamSwitch.to_string switch))
     ~dst:(OpamFilename.Dir.of_string target);
   target
-
-let get2 = function  s1::s2::[]-> s1, s2 | _ -> assert false
-
-let list_init len f =
-  let rec init_aux i n f =
-    if i >= n then []
-    else
-      let r = f i in
-      r :: init_aux (i+1) n f
-  in
-  init_aux 0 len f
-
-let seq l f =
-  List.iter f l
-
-let fork lst f =
-  let pids =
-    List.map (fun arg -> (* to be sure to have at least 1s of delay in tms *)
-        Unix.sleep 1;
-        match Unix.fork () with
-        | 0 -> (try f arg with OpamStd.Sys.Exit n -> exit n); exit 255
-        | pid -> pid) lst
-    |> OpamStd.IntSet.of_list
-  in
-  let w, err =
-    List.fold_left (fun (w,err) (p,e) ->
-        let w = p::w in
-        if e = Unix.WEXITED 255 then w, err else w, e::err)
-      ([],[])
-      (list_init (OpamStd.IntSet.cardinal pids) (fun _ -> Unix.wait ()))
-  in
-  let w = OpamStd.IntSet.of_list w in
-  let remaining = OpamStd.IntSet.Op.(pids -- w) in
-  if not (OpamStd.IntSet.is_empty remaining) then
-    exit_error `Not_found "Remaining pids %s"
-      (OpamStd.IntSet.to_string remaining);
-  if err <> [] then
-    exit_error `False
-      "Some subprocesses ended with a non-zero code: %s"
-      (OpamStd.Format.pretty_list (List.map (function
-           | Unix.WEXITED e -> Printf.sprintf "exit %d" e
-           | Unix.WSIGNALED e -> Printf.sprintf "signal %d" e
-           | Unix.WSTOPPED e -> Printf.sprintf "stop %d" e) err))
 
 let export name =
   OpamGlobalState.with_ `Lock_none @@ fun gt ->
