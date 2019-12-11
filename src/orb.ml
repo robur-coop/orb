@@ -616,9 +616,8 @@ let rebuild_cmd =
   ]
   in
   let build_info =
-    mk_opt [ "build-info" ] "[DIR]"
-      "use the build-info from [DIR]"
-      Arg.(some string) None
+    let doc = "use the build-info from [DIR]" in
+    Arg.(value & pos 0 (some string) None & info [] ~doc ~docv:"[DIR]")
   in
   Term.((const rebuild $ global_options $ build_options $ diffoscope $ keep_build $ build_info)),
   Term.info "rebuild" ~man ~doc
