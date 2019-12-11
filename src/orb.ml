@@ -115,11 +115,35 @@ let drop_states ?gt ?rt ?st () =
   OpamStd.Option.iter OpamRepositoryState.drop rt;
   OpamStd.Option.iter OpamGlobalState.drop gt
 
+let create_env epoch dir =
+  let opt key = function None -> [] | Some x -> [ key, x ] in
+  [ "BUILD_PATH", dir ;
+    "SOURCE_DATE_EPOCH", string_of_int (int_of_float epoch) ;
+    "BUILD_DATE", string_of_int (int_of_float (Unix.time ())) ;
+  ] @ opt "ARCH" (OpamSysPoll.arch ())
+  @ opt "OS" (OpamSysPoll.os ())
+  @ opt "OS_DISTRIBUTION" (OpamSysPoll.os_distribution ())
+  @ opt "OS_VERSION" (OpamSysPoll.os_version ())
+  @ opt "OS_FAMILY" (OpamSysPoll.os_family ())
+
+let env_to_string env =
+  String.concat "\n" (List.map (fun (k, v) -> k ^ "=" ^ v) env)
+
+let env_of_string str =
+  let lines = String.split_on_char '\n' str in
+  List.fold_left (fun acc line ->
+      match String.split_on_char '=' line with
+      | [ key ; value ] -> (key, value) :: acc
+      | _ ->
+        OpamConsole.msg "bad environment %s" line;
+        acc)
+    [] lines
+
 let add_env _switch epoch gt st =
   let env = OpamFile.Switch_config.env st.OpamStateTypes.switch_config in
   let source_date_epoch =
     "SOURCE_DATE_EPOCH", OpamParserTypes.Eq,
-    Printf.sprintf "%d" (int_of_float epoch),
+    string_of_int (int_of_float epoch),
     Some "Reproducible builds date" ;
   in
   (*  let value = target ^ "=" ^ OpamSwitch.to_string switch in
@@ -137,7 +161,7 @@ let add_env _switch epoch gt st =
   in
   log "adding to environment (time %d): %s"
     (int_of_float (Unix.time ()))
-    (String.concat "\n" (List.map (fun (s, _, v, _) -> s ^"="^v) to_add));
+    (env_to_string (List.map (fun (k, _, v, _) -> (k, v)) to_add));
   let switch_config =
       OpamFile.Switch_config.with_env (to_add @ env) st.switch_config
   in
@@ -325,10 +349,10 @@ let diff_map track1 track2 =
       else OpamPackage.Map.add pkg file_map map
     ) track1 OpamPackage.Map.empty
 
-let output_buildinfo dir map =
+let output_buildinfo_and_env dir name map env =
   let filename post =
     let rec fn n =
-      let filename = post ^ "-" ^ string_of_int n in
+      let filename = post ^ "." ^ string_of_int n in
       let file = Filename.concat dir filename in
       if Sys.file_exists file then fn (succ n) else filename
     in
@@ -336,14 +360,16 @@ let output_buildinfo dir map =
   in
   OpamPackage.Map.iter (fun pkg map ->
       let value = OpamFile.Changes.write_to_string map in
-      let fn = filename (OpamPackage.Name.to_string pkg.name ^ ".buildinfo") in
+      let fn = filename (OpamPackage.Name.to_string pkg.name ^ ".build-hashes") in
       log "writing %s" (OpamFilename.to_string fn);
       write_file fn value)
-    map
+    map;
+  let fn = filename (name ^ ".build-environment") in
+  write_file fn (env_to_string env)
 
 let copy_build_dir dir switch =
   let rec bdir c =
-    let dir' = dir ^ "-" ^ string_of_int c in
+    let dir' = dir ^ "." ^ string_of_int c in
     if Sys.file_exists dir' then
       bdir (succ c)
     else
@@ -441,6 +467,30 @@ let compare_builds tracking_map tracking_map' build1st build2nd diffoscope =
           (OpamStd.String.Map.to_string string_of_diff) final_map);
      OpamStd.Option.iter (generate_diffs build1st build2nd final_map) diffoscope)
 
+let project_name_from_arg = function
+  | `Atom (name, _) :: _ -> OpamPackage.Name.to_string name
+  | `Dirname dir :: _ -> OpamFilename.Dir.to_string dir
+  | `Filename file :: _ -> OpamFilename.to_string file
+  | _ -> invalid_arg "empty atoms_or_locals"
+
+let project_name_from_dir dir = (* the first <name>.opam-switch *)
+  match
+    List.find_opt (fun t -> OpamFilename.check_suffix t "opam-switch")
+      (OpamFilename.files (OpamFilename.Dir.of_string dir))
+  with
+  | None -> failwith "couldn't find switch"
+  | Some t ->
+    let base n = OpamFilename.(Base.to_string (basename (chop_extension n))) in
+    base t,
+    OpamStd.String.Set.elements
+      (List.fold_left (fun acc t ->
+           if OpamFilename.(check_suffix (chop_extension t) ".build-hashes") then
+             OpamStd.String.Set.add (base t) acc
+           else
+             acc)
+          OpamStd.String.Set.empty
+          (OpamFilename.files (OpamFilename.Dir.of_string dir)))
+
 (* Main function *)
 let orb global_options build_options diffoscope keep_build twice compiler_pin compiler switch
     repos atoms_or_locals =
@@ -451,56 +501,41 @@ let orb global_options build_options diffoscope keep_build twice compiler_pin co
   (match compiler_pin, compiler, switch with
    | None, None, None -> OpamStateConfig.update ~unlock_base:true ();
    | _ -> ());
-  let sw = OpamSystem.mk_temp_dir ~prefix:"orb" () in
+  let name = project_name_from_arg atoms_or_locals in
+  let sw = OpamSystem.mk_temp_dir ~prefix:("orb-" ^ name) () in
   let switch' = OpamSwitch.of_string sw in
   if switch = None then clean_switch := Some switch';
   let epoch = Unix.time () in
   (match switch with
    | None -> install_switch epoch ?repos compiler_pin compiler switch'
    | Some _ -> update_switch_env epoch switch');
-
   install switch' atoms_or_locals;
   log "installed";
-
   let tracking_map = tracking_maps switch' atoms_or_locals in
-
-    (* output build info:
-       - export switch
-       - recorded changes above (tracking_map)
-       - ?export buildpath / environment?
-    *)
-  let bidir = OpamSystem.mk_temp_dir ~prefix:"buildinfo" () in
+  let bidir = OpamSystem.mk_temp_dir ~prefix:("bi-" ^ name) () in
   log "%s" (OpamConsole.colorise `green "BUILD INFO");
+  let env = create_env epoch (OpamSwitch.to_string switch') in
+  output_buildinfo_and_env bidir name tracking_map env;
+  (* switch export - make a full one *)
+  export switch' (bidir ^ "/" ^ name ^ ".opam-switch");
   let build1st =
     if twice || keep_build
     then Some (copy_build_dir bidir switch')
     else None
   in
-
-  output_buildinfo bidir tracking_map;
-  (* switch export - make a full one *)
-  export switch' (bidir ^ "/repo.export");
-  (* environment variables -- SOURCE_DATE_EPOCH and switch name for now *)
-  (* they're partially used for rebuilding, partially as metadata *)
-  let env = [
-    "SOURCE_DATE_EPOCH", string_of_float epoch ;
-    "BUILD_PATH", OpamSwitch.to_string switch' ;
-    (* ARCH/OS/OS-FAMILY/OS-DISTRIBUTION/OS-VERSION/TIMESTAMP of build *)
-  ] in
-  write_file OpamFilename.(create (Dir.of_string bidir) (Base.of_string "env"))
-    (String.concat "\n" (List.map (fun (k, v) -> k ^ "=" ^ v) env));
   cleanup ();
   if twice then begin
     let build1st = match build1st with None -> assert false | Some x -> x in
     let switch' = OpamSwitch.of_string sw in
-    let switch_in = OpamFile.make (OpamFilename.of_string (bidir ^ "/repo.export")) in
+    let switch_in = OpamFile.make (OpamFilename.of_string (bidir ^ "/" ^ name ^ "/opam-switch")) in
     let _ = import_switch epoch switch' (Some switch_in) in
     log "switch imported (installed stuff)";
     let build2nd = if keep_build then copy_build_dir bidir switch' else sw in
     let tracking_map' = tracking_maps switch' atoms_or_locals in
     log "tracking map";
     log "%s" (OpamConsole.colorise `green "BUILD INFO");
-    output_buildinfo bidir tracking_map';
+    let env' = create_env epoch sw in
+    output_buildinfo_and_env bidir name tracking_map' env';
     log "wrote tracking map";
     compare_builds tracking_map tracking_map' build1st build2nd diffoscope
   end
@@ -511,23 +546,19 @@ let rebuild global_options build_options diffoscope keep_build build_info =
   | Some dir ->
     common_start global_options build_options diffoscope;
     OpamStateConfig.update ~unlock_base:true ();
+    let name, _packages = project_name_from_dir dir in
     let filename post =
       OpamFilename.(create (Dir.of_string dir) (Base.of_string post))
     in
     let env =
-      let data = read_file (filename "env") in
-      let lines = String.split_on_char '\n' data in
-      List.fold_left (fun acc line ->
-          match String.split_on_char '=' line with
-          | [ key ; value ] -> (key, value) :: acc
-          | _ ->
-            OpamConsole.msg "bad environment %s" line;
-            acc)
-        [] lines
+      let data = read_file (filename (name ^ ".build-environment.0")) in
+      env_of_string data
     in
     let sw = List.assoc "BUILD_PATH" env in
     let switch = OpamSwitch.of_string sw in
-    let switch_in = OpamFile.make (OpamFilename.of_string (dir ^ "/repo.export")) in
+    let switch_in =
+      OpamFile.make (OpamFilename.of_string (dir ^ "/" ^ name ^ ".opam-switch"))
+    in
     let epoch = float_of_string @@ List.assoc "SOURCE_DATE_EPOCH" env in
     let packages = import_switch epoch switch (Some switch_in) in
     log "switch imported (installed stuff) %d packages"
@@ -537,11 +568,11 @@ let rebuild global_options build_options diffoscope keep_build build_info =
       List.map (fun a -> `Atom (a.OpamPackage.name, None))
           (OpamPackage.Set.elements packages)
     in
-    (* TODO output build environment *)
     let tracking_map = tracking_maps switch atoms_or_locals in
     log "got tracking maps";
     log "%s" (OpamConsole.colorise `green "BUILD INFO");
-    output_buildinfo dir tracking_map;
+    let env = create_env epoch sw in
+    output_buildinfo_and_env dir name tracking_map env;
     ()
     (* compare_builds tracking_map tracking_map' build1st build2nd diffoscope *)
 
@@ -616,7 +647,7 @@ let rebuild_cmd =
   ]
   in
   let build_info =
-    let doc = "use the build-info from [DIR]" in
+    let doc = "use the build information in [DIR]" in
     Arg.(value & pos 0 (some string) None & info [] ~doc ~docv:"[DIR]")
   in
   Term.((const rebuild $ global_options $ build_options $ diffoscope $ keep_build $ build_info)),
