@@ -356,11 +356,11 @@ let copy_build_dir dir switch =
     ~dst:(OpamFilename.Dir.of_string target);
   target
 
-let export name =
+let export switch name =
   OpamGlobalState.with_ `Lock_none @@ fun gt ->
   OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
   let switch_out = OpamFile.make (OpamFilename.of_string name) in
-  OpamSwitchCommand.export rt ~full:true (Some switch_out);
+  OpamSwitchCommand.export rt ~full:true ~switch (Some switch_out);
   drop_states ~gt ~rt ()
 
 let generate_diffs root1 root2 final_map dir =
@@ -479,7 +479,7 @@ let orb global_options build_options diffoscope keep_build twice compiler_pin co
 
   output_buildinfo bidir tracking_map;
   (* switch export - make a full one *)
-  export (bidir ^ "/repo.export");
+  export switch' (bidir ^ "/repo.export");
   (* environment variables -- SOURCE_DATE_EPOCH and switch name for now *)
   (* they're partially used for rebuilding, partially as metadata *)
   let env = [
