@@ -115,6 +115,9 @@ let drop_states ?gt ?rt ?st () =
   OpamStd.Option.iter OpamRepositoryState.drop rt;
   OpamStd.Option.iter OpamGlobalState.drop gt
 
+let switch_filename dir name =
+  OpamFile.make (OpamFilename.of_string (dir ^ "/" ^ name ^ ".opam-switch"))
+
 let create_env epoch dir =
   let opt key = function None -> [] | Some x -> [ key, x ] in
   [ "BUILD_PATH", dir ;
@@ -127,7 +130,7 @@ let create_env epoch dir =
   @ opt "OS_FAMILY" (OpamSysPoll.os_family ())
 
 let env_to_string env =
-  String.concat "\n" (List.map (fun (k, v) -> k ^ "=" ^ v) env)
+  String.concat "\n" ("" :: List.map (fun (k, v) -> k ^ "=" ^ v) env)
 
 let env_of_string str =
   let lines = String.split_on_char '\n' str in
@@ -382,10 +385,10 @@ let copy_build_dir dir switch =
     ~dst:(OpamFilename.Dir.of_string target);
   target
 
-let export switch name =
+let export switch dir name =
   OpamGlobalState.with_ `Lock_none @@ fun gt ->
   OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
-  let switch_out = OpamFile.make (OpamFilename.of_string name) in
+  let switch_out = switch_filename dir name in
   OpamSwitchCommand.export rt ~full:true ~switch (Some switch_out);
   drop_states ~gt ~rt ()
 
@@ -517,7 +520,7 @@ let orb global_options build_options diffoscope keep_build twice compiler_pin co
   let env = create_env epoch (OpamSwitch.to_string switch') in
   output_buildinfo_and_env bidir name tracking_map env;
   (* switch export - make a full one *)
-  export switch' (bidir ^ "/" ^ name ^ ".opam-switch");
+  export switch' bidir name;
   let build1st =
     if twice || keep_build
     then Some (copy_build_dir bidir switch')
@@ -527,7 +530,7 @@ let orb global_options build_options diffoscope keep_build twice compiler_pin co
   if twice then begin
     let build1st = match build1st with None -> assert false | Some x -> x in
     let switch' = OpamSwitch.of_string sw in
-    let switch_in = OpamFile.make (OpamFilename.of_string (bidir ^ "/" ^ name ^ "/opam-switch")) in
+    let switch_in = switch_filename bidir name in
     let _ = import_switch epoch switch' (Some switch_in) in
     log "switch imported (installed stuff)";
     let build2nd = if keep_build then copy_build_dir bidir switch' else sw in
@@ -556,9 +559,7 @@ let rebuild global_options build_options diffoscope keep_build build_info =
     in
     let sw = List.assoc "BUILD_PATH" env in
     let switch = OpamSwitch.of_string sw in
-    let switch_in =
-      OpamFile.make (OpamFilename.of_string (dir ^ "/" ^ name ^ ".opam-switch"))
-    in
+    let switch_in = switch_filename dir name in
     let epoch = float_of_string @@ List.assoc "SOURCE_DATE_EPOCH" env in
     let packages = import_switch epoch switch (Some switch_in) in
     log "switch imported (installed stuff) %d packages"
