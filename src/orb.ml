@@ -576,7 +576,8 @@ let orb global_options build_options diffoscope keep_build twice compiler_pin co
    | None, None, None -> OpamStateConfig.update ~unlock_base:true ();
    | _ -> ());
   let name = project_name_from_arg atoms_or_locals in
-  let sw = OpamSystem.mk_temp_dir ~prefix:("orb-" ^ name) () in
+  let bidir = OpamSystem.mk_temp_dir ~prefix:("bi-" ^ name) () in
+  let sw = bidir ^ "/build" in
   let switch' = OpamSwitch.of_string sw in
   if switch = None then clean_switch := Some switch';
   let epoch = Unix.time () in
@@ -586,7 +587,6 @@ let orb global_options build_options diffoscope keep_build twice compiler_pin co
   install switch' atoms_or_locals;
   log "installed";
   let tracking_map = tracking_maps switch' atoms_or_locals in
-  let bidir = OpamSystem.mk_temp_dir ~prefix:("bi-" ^ name) () in
   log "%s" (OpamConsole.colorise `green "BUILD INFO");
   let env = create_env epoch (OpamSwitch.to_string switch') in
   let generation = output_buildinfo_and_env bidir name tracking_map env in
