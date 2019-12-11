@@ -124,6 +124,7 @@ let dot_switch = ".opam-switch"
 let dot_hash = ".build-hashes"
 let dot_env = ".build-environment"
 let dot_build = ".build"
+let dot_diffoscope = ".diffoscope"
 
 let switch_filename dir name =
   let fn = Printf.sprintf "%s/%s%s" dir name dot_switch in
@@ -432,7 +433,8 @@ let export switch dir name =
   drop_states ~gt ~rt ()
 
 let generate_diffs root1 root2 final_map dir =
-  let root1 = OpamFilename.Dir.of_string (root1 ^ "/_opam")
+  let dir = OpamFilename.Dir.of_string dir
+  and root1 = OpamFilename.Dir.of_string (root1 ^ "/_opam")
   and root2 = OpamFilename.Dir.of_string (root2 ^ "/_opam")
   in
   let open OpamFilename.Op in
@@ -486,7 +488,7 @@ let generate_diffs root1 root2 final_map dir =
            OpamProcess.string_of_command cmd) can)
 
 let common_start global_options build_options diffoscope =
-  if diffoscope <> None && OpamSystem.resolve_command "diffoscope" = None then
+  if diffoscope && OpamSystem.resolve_command "diffoscope" = None then
     exit_error `Not_found "diffoscope not found";
   let root = OpamStateConfig.(!r.root_dir) in
   let config_f = OpamPath.config root in
@@ -498,7 +500,7 @@ let common_start global_options build_options diffoscope =
   OpamCoreConfig.update ~precise_tracking:true ~answer:(Some true) ();
   OpamStd.Sys.at_exit cleanup
 
-let compare_builds tracking_map tracking_map' build1st build2nd diffoscope =
+let compare_builds tracking_map tracking_map' dir build1st build2nd diffoscope =
   let final_map = diff_map tracking_map tracking_map' in
   if OpamPackage.Map.is_empty final_map then
     log "%s" (OpamConsole.colorise `green "It is reproducible!!!")
@@ -507,9 +509,10 @@ let compare_builds tracking_map tracking_map' build1st build2nd diffoscope =
        (OpamConsole.colorise `red "mismatching hashes")
        (OpamPackage.Map.to_string
           (OpamStd.String.Map.to_string string_of_diff) final_map);
-     match build1st with
-     | None -> log "no previous build dir available, couldn't copy and run diffoscope"
-     | Some dir -> OpamStd.Option.iter (generate_diffs dir build2nd final_map) diffoscope)
+     if diffoscope then
+       match build1st with
+       | None -> log "no previous build dir available, couldn't run diffoscope"
+       | Some build1 -> generate_diffs build1 build2nd final_map dir)
 
 let project_name_from_arg = function
   | `Atom (name, _) :: _ -> OpamPackage.Name.to_string name
@@ -570,7 +573,7 @@ let rebuild ~sw ~bidir ~name epoch ~keep_build =
   let generation = output_buildinfo_and_env bidir name tracking_map env in
   let build2nd = if keep_build then copy_build_dir bidir generation switch else sw in
   log "wrote tracking map";
-  tracking_map, build2nd, packages
+  tracking_map, build2nd, generation, packages
 
 (* Main function *)
 let orb global_options build_options diffoscope keep_build twice compiler_pin compiler switch
@@ -606,8 +609,9 @@ let orb global_options build_options diffoscope keep_build twice compiler_pin co
   in
   cleanup ();
   if twice then
-    let tracking_map', build2nd, _ = rebuild ~sw ~bidir ~name epoch ~keep_build:true in
-    compare_builds tracking_map tracking_map' build1st build2nd diffoscope
+    let tracking_map', build2nd, my_gen, _ = rebuild ~sw ~bidir ~name epoch ~keep_build:true in
+    let dir = Printf.sprintf "%s/%d-%d%s" bidir generation my_gen dot_diffoscope in
+    compare_builds tracking_map tracking_map' dir  build1st build2nd diffoscope
 
 let rebuild global_options build_options diffoscope keep_build build_info =
   match build_info with
@@ -618,7 +622,7 @@ let rebuild global_options build_options diffoscope keep_build build_info =
     let name, generation, env = find_env dir in
     let sw = List.assoc "SWITCH_PATH" env in
     let epoch = float_of_string @@ List.assoc "SOURCE_DATE_EPOCH" env in
-    let tracking_map_2nd, build2nd, packages =
+    let tracking_map_2nd, build2nd, my_gen, packages =
       rebuild ~sw ~bidir:dir ~name epoch ~keep_build
     in
     let tracking_map_1st = OpamPackage.Set.fold (fun pkg acc ->
@@ -629,16 +633,14 @@ let rebuild global_options build_options diffoscope keep_build build_info =
     in
     let build1st = find_build_dir generation dir in
     log "comparing with old build dir %s" (match build1st with None -> "no" | Some x -> x);
-    compare_builds tracking_map_1st tracking_map_2nd build1st build2nd diffoscope
+    let dir = Printf.sprintf "%s/%d-%d%s" dir generation my_gen dot_diffoscope in
+    compare_builds tracking_map_1st tracking_map_2nd dir build1st build2nd diffoscope
 
 (** CLI *)
 open Cmdliner
 open OpamArg
 
-let diffoscope =
-  mk_opt ["diffoscope"] "[DIR]"
-    "use diffoscope to generate a report (if $(i,twice) is used as well)"
-    Arg.(some dirname) ~vopt:(Some (OpamFilename.Dir.of_string "diffoscope")) None
+let diffoscope = mk_flag ["diffoscope"] "use diffoscope to generate a report"
 
 let keep_build =
   mk_flag ["keep-build"] "keep built temporary products"
