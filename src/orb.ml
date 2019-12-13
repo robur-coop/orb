@@ -284,10 +284,6 @@ let install switch atoms_or_locals =
          (OpamPackage.Name.Set.to_string installed);
        OpamClient.remove st ~autoremove:false ~force:false atoms)
   in
-  let st =
-    log "Install deps of %s" (OpamFormula.string_of_atoms atoms);
-    OpamClient.install st atoms ~deps_only:true
-  in
   log "Install %s" (OpamFormula.string_of_atoms atoms);
   let st = OpamClient.install st atoms in
   drop_states ~gt ~rt ~st ()
