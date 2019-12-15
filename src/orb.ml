@@ -566,7 +566,7 @@ let rebuild ~sw ~bidir ~name epoch ~keep_build =
   tracking_map, build2nd, generation, packages
 
 (* Main function *)
-let orb global_options build_options diffoscope keep_build twice compiler_pin compiler switch
+let build global_options build_options diffoscope keep_build twice compiler_pin compiler switch
     repos atoms_or_locals =
   if atoms_or_locals = [] then
     exit_error `Bad_arguments
@@ -603,10 +603,8 @@ let orb global_options build_options diffoscope keep_build twice compiler_pin co
     let dir = Printf.sprintf "%s/%d-%d%s" bidir generation my_gen dot_diffoscope in
     compare_builds tracking_map tracking_map' dir  build1st build2nd diffoscope
 
-let rebuild global_options build_options diffoscope keep_build build_info =
-  match build_info with
-  | None -> failwith "require build info directory"
-  | Some dir ->
+let rebuild global_options build_options diffoscope keep_build dir =
+  if dir = "" then failwith "require build info directory" else begin
     common_start global_options build_options diffoscope;
     OpamStateConfig.update ~unlock_base:true ();
     let name, generation, env = find_env dir in
@@ -625,6 +623,7 @@ let rebuild global_options build_options diffoscope keep_build build_info =
     log "comparing with old build dir %s" (match build1st with None -> "no" | Some x -> x);
     let dir = Printf.sprintf "%s/%d-%d%s" dir generation my_gen dot_diffoscope in
     compare_builds tracking_map_1st tracking_map_2nd dir build1st build2nd diffoscope
+  end
 
 (** CLI *)
 open Cmdliner
@@ -635,18 +634,13 @@ let diffoscope = mk_flag ["diffoscope"] "use diffoscope to generate a report"
 let keep_build =
   mk_flag ["keep-build"] "keep built temporary products"
 
-let orb_cmd =
-  let doc = "Check reproducibility of opam packages" in
+let build_cmd =
+  let doc = "Build opam packages and output build information for rebuilding" in
   let man = [
     `S "DESCRIPTION";
-    `P "$(b,orb) is a tool to check the reproducibility of opam package builds. \
+    `P "$(b,build) is a tool to check the reproducibility of opam package builds. \
         It relies on an already installed opam, and creates required build \
-        information for reproducing the same output. The \
-        creates two switches and launches \
-        the install of the packages in parallel, so that paths and time differ. \
-        To check the reproducibility of the package itself, a first step installs \
-        all dependencies, then a second tracks the changes after the installation \
-        of PACKAGES.";
+        information for reproducing the same output.";
     `S "ARGUMENTS";
     `S "OPTIONS";
     `S OpamArg.build_option_section;
@@ -676,26 +670,29 @@ let orb_cmd =
        repositories."
       Arg.(some & list & OpamArg.repository_name) None
   in
-  Term.((const orb $ global_options $ build_options
+  Term.((const build $ global_options $ build_options
          $ diffoscope $ keep_build $ twice $ compiler_pin $ compiler $ use_switch
          $ repos $ atom_or_local_list)),
-  Term.info "orb" ~man ~doc
+  Term.info "build" ~man ~doc
 
 let rebuild_cmd =
-  let doc = "Rebuild an opam repository" in
+  let doc = "Rebuild opam packages based on build information" in
   let man = [
     `S "DESCRIPTION";
-    `P "$(b,orb) is a tool to rebuild an opam package with repository \
-        information. The resulting install files are compared with the \
-        ones provided. If the package is reproducible, there's no diff.";
+    `P "$(b,rebuild) is a tool to rebuild an opam package using an exported \
+        opam switch, a build environment, and reported build hashes. If an \
+        existing build environment matches the host operating system, the \
+        hashes of the installed files of all roots in the export are compared \
+        against the previous build. If the build directory is kept, diffoscope \
+        can be used to make the differences human readable.";
     `S "ARGUMENTS";
     `S "OPTIONS";
     `S OpamArg.build_option_section;
   ]
   in
   let build_info =
-    let doc = "use the build information in [DIR]" in
-    Arg.(value & pos 0 (some string) None & info [] ~doc ~docv:"[DIR]")
+    let doc = "use build information in the provided directory" in
+    Arg.(value & pos 0 string "" & info [] ~doc ~docv:"DIR")
   in
   Term.((const rebuild $ global_options $ build_options $ diffoscope $ keep_build $ build_info)),
   Term.info "rebuild" ~man ~doc
@@ -722,14 +719,12 @@ let default_cmd =
   let doc = "OPAM reproducible builder" in
   let man = [
     `S "DESCRIPTION" ;
-    `P "$(tname) builds opam packages, checking for reproducibility" ]
-  in
+    `P "$(tname) builds opam packages, checking for reproducibility." ;
+  ] in
   Term.(ret (const help $ Term.man_format $ Term.choice_names $ Term.pure None)),
   Term.info "orb" ~version:"%%VERSION%%" ~doc ~man
 
-let cmds = [
-  orb_cmd ; rebuild_cmd
-]
+let cmds = [ build_cmd ; rebuild_cmd ]
 
 let () =
   Orb_stub.main ();
