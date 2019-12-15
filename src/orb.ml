@@ -238,11 +238,15 @@ let install_switch epoch ?repos compiler_pin compiler_version switch =
       let st = OpamClient.PIN.pin ~action:false st pkg src in
       log "Pinned compiler to %s" path;
       st
-    | None, Some version ->
-      let version = OpamPackage.Version.of_string version in
-      let pkg = OpamPackage.Name.of_string "ocaml" in
+    | None, Some v ->
+      let version = OpamPackage.Version.of_string v in
+      let pkg =
+        OpamPackage.Name.of_string
+          (if OpamStd.String.contains_char v '+' then "ocaml-variants" else "ocaml")
+      in
       let st = OpamClient.PIN.pin ~action:false st pkg (`Version version) in
-      log "Pinned compiler to ocaml.%s" (OpamPackage.Version.to_string version);
+      log "Pinned compiler to %s.%s" (OpamPackage.Version.to_string version)
+        (OpamPackage.Version.to_string version);
       st
     | Some _, Some _ ->
       exit_error `Bad_arguments
@@ -280,7 +284,7 @@ let install switch atoms_or_locals =
         %% OpamPackage.names_of_packages st.installed)
     in
     if OpamPackage.Name.Set.is_empty installed then st else
-      (log "Remove previsouly installed packages: %s"
+      (log "Remove previously installed packages: %s"
          (OpamPackage.Name.Set.to_string installed);
        OpamClient.remove st ~autoremove:false ~force:false atoms)
   in
@@ -415,7 +419,7 @@ let export switch dir name =
   OpamGlobalState.with_ `Lock_none @@ fun gt ->
   OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
   let switch_out = switch_filename dir name in
-  OpamSwitchCommand.export rt ~full:true ~switch (Some switch_out);
+  OpamSwitchCommand.export gt rt ~full:true ~switch (Some switch_out);
   drop_states ~gt ~rt ()
 
 let generate_diffs root1 root2 final_map dir =
@@ -728,6 +732,7 @@ let cmds = [
 ]
 
 let () =
+  Orb_stub.main ();
   let buff = Buffer.create 1024 in
   let fmt = Format.formatter_of_buffer buff in
   match Term.eval_choice default_cmd cmds ~err:fmt ~catch:true with
