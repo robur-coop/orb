@@ -7,7 +7,7 @@ https://reproducible-builds.org). It installs the package twice (different path
 ## Install & use
 
 ```
-$ opam pin git+https://github.com/rjbou/orb
+$ opam pin git+https://github.com/hannesm/orb#active
 $ orb pkg [--diiffoscope]
 ```
 
