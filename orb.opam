@@ -18,10 +18,10 @@ depends: [
 build: ["dune" "build" "-p" name "-j" jobs]
 dev-repo: "git+https://github.com/rjbou/orb.git"
 pin-depends: [
-  ["opam-client.2.1.0~beta" "git+https://github.com/rjbou/opam#export-build-info"]
-  ["opam-repository.2.1.0~beta" "git+https://github.com/rjbou/opam#export-build-info"]
-  ["opam-core.2.1.0~beta" "git+https://github.com/rjbou/opam#export-build-info"]
-  ["opam-format.2.1.0~beta" "git+https://github.com/rjbou/opam#export-build-info"]
-  ["opam-solver.2.1.0~beta" "git+https://github.com/rjbou/opam#export-build-info"]
-  ["opam-state.2.1.0~beta" "git+https://github.com/rjbou/opam#export-build-info"]
+  ["opam-client.2.1.0~beta" "git+https://github.com/rjbou/opam#orb"]
+  ["opam-repository.2.1.0~beta" "git+https://github.com/rjbou/opam#orb"]
+  ["opam-core.2.1.0~beta" "git+https://github.com/rjbou/opam#orb"]
+  ["opam-format.2.1.0~beta" "git+https://github.com/rjbou/opam#orb"]
+  ["opam-solver.2.1.0~beta" "git+https://github.com/rjbou/opam#orb"]
+  ["opam-state.2.1.0~beta" "git+https://github.com/rjbou/opam#orb"]
 ]

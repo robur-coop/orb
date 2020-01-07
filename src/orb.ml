@@ -419,7 +419,7 @@ let export switch dir name =
   OpamGlobalState.with_ `Lock_none @@ fun gt ->
   OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
   let switch_out = switch_filename dir name in
-  OpamSwitchCommand.export gt rt ~full:true ~switch (Some switch_out);
+  OpamSwitchCommand.export rt ~full:true ~switch (Some switch_out);
   drop_states ~gt ~rt ()
 
 let generate_diffs root1 root2 final_map dir =
