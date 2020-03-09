@@ -1,6 +1,5 @@
 _build
 _opam
 .merlin
-dune-project
 orb
 diffoscope
