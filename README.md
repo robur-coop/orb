@@ -28,7 +28,6 @@ generated, using [`diffoscope`](https://diffoscope.org/).
 
 As `orb` generates temporary switches, packages dependencies are installed each 
 time (also compiler), which can be time consuming when working on a package. 
-Option `--use-switches sw1,sw2` can be used to give reusable switches.
 
 `--keep-switches`  option permit to keep those generated switches for 
 investigation needs. To manually remove them, don't just remove directory, but 
