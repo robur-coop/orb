@@ -1,14 +1,8 @@
-(library
- (name orb_stub)
- (public_name orb.stub)
- (wrapped false)
- (libraries unix)
- (modules orb_stub)
- (c_names orb_stubs))
-
 (executable
  (name orb)
  (public_name orb)
  (modules orb)
- (libraries orb.stub opam-client)
-)
+ (foreign_stubs
+  (language c)
+  (names orb_stubs))
+ (libraries opam-client))
