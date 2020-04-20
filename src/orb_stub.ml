@@ -6,7 +6,7 @@
    - this is all on toplevel and in here since it needs to be run before
      opam captures the environment
 *)
-
+(*
 let path = try Some (Unix.getenv "PATH") with Not_found -> None;;
 
 external unsetenv : string -> unit = "orb_unsetenv";;
@@ -47,5 +47,6 @@ let find_path () =
   String.concat ":" our_path;;
 
 Unix.putenv "PATH" (find_path ());;
+*)
 
 let main () = ()

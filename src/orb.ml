@@ -72,49 +72,6 @@ let exit_error reason fmt =
   cleanup ();
   OpamConsole.error_and_exit reason fmt
 
-let get2 = function  s1::s2::[]-> s1, s2 | _ -> assert false
-
-let list_init len f =
-  let rec init_aux i n f =
-    if i >= n then []
-    else
-      let r = f i in
-      r :: init_aux (i+1) n f
-  in
-  init_aux 0 len f
-
-let seq l f =
-  List.iter f l
-
-let fork lst f =
-  let pids =
-    List.map (fun arg -> (* to be sure to have at least 1s of delay in tms *)
-        Unix.sleep 1;
-        match Unix.fork () with
-        | 0 -> (try f arg with OpamStd.Sys.Exit n -> exit n); exit 255
-        | pid -> pid) lst
-    |> OpamStd.IntSet.of_list
-  in
-  let w, err =
-    List.fold_left (fun (w,err) (p,e) ->
-        let w = p::w in
-        if e = Unix.WEXITED 255 then w, err else w, e::err)
-      ([],[])
-      (list_init (OpamStd.IntSet.cardinal pids) (fun _ -> Unix.wait ()))
-  in
-  let w = OpamStd.IntSet.of_list w in
-  let remaining = OpamStd.IntSet.Op.(pids -- w) in
-  if not (OpamStd.IntSet.is_empty remaining) then
-    exit_error `Not_found "Remaining pids %s"
-      (OpamStd.IntSet.to_string remaining);
-  if err <> [] then
-    exit_error `False
-      "Some subprocesses ended with a non-zero code: %s"
-      (OpamStd.Format.pretty_list (List.map (function
-           | Unix.WEXITED e -> Printf.sprintf "exit %d" e
-           | Unix.WSIGNALED e -> Printf.sprintf "signal %d" e
-           | Unix.WSTOPPED e -> Printf.sprintf "stop %d" e) err))
-
 let drop_states ?gt ?rt ?st () =
   OpamStd.Option.iter OpamSwitchState.drop st;
   OpamStd.Option.iter OpamRepositoryState.drop rt;
@@ -132,7 +89,7 @@ let switch_filename dir name =
 
 let convert_date x = string_of_int (int_of_float x)
 
-let custom_env = [
+let custom_env () = [
   "OS", OpamSysPoll.os ();
   "OS_DISTRIBUTION", OpamSysPoll.os_distribution ();
   "OS_VERSION", OpamSysPoll.os_version ();
@@ -147,7 +104,7 @@ let create_env epoch dir =
   ] @
   List.fold_left
     (fun acc (k, v) -> match v with None -> acc | Some v -> (k,v)::acc)
-    [] custom_env
+    [] (custom_env ())
 
 let env_to_string env =
   String.concat "\n" ("" :: List.map (fun (k, v) -> k ^ "=" ^ v) env)
@@ -168,51 +125,33 @@ let env_matches env =
     | _, None -> log "key %s not found in environment" key ; true
     | Some v, Some v' -> String.equal v v'
   in
-  List.for_all (fun (k, v) -> opt_compare k v) custom_env
+  List.for_all (fun (k, v) -> opt_compare k v) (custom_env ())
 
-let add_env _switch epoch gt st =
-  let env = OpamFile.Switch_config.env st.OpamStateTypes.switch_config in
-  let source_date_epoch =
-    "SOURCE_DATE_EPOCH", OpamParserTypes.Eq, convert_date epoch,
-    Some "Reproducible builds date" ;
-  in
-  (*  let value = target ^ "=" ^ OpamSwitch.to_string switch in
-      log "BPPM is %s!" (OpamConsole.colorise `green value);
-      let prefix_map =
-      "BUILD_PATH_PREFIX_MAP", OpamParserTypes.Eq,
-      value, Some "Build path prefix map"
-      in *)
-  let to_add =
-    List.fold_left (fun swc v ->
-        let s,_,_,_ = v in
-        match OpamStd.List.find_opt (fun (s',_,_,_) -> s = s') env with
-        | Some _ -> swc
-        | None -> v::swc) [] [ (* prefix_map ; *) source_date_epoch ]
-  in
-  log "adding to environment (time %s): %s"
-    (convert_date (Unix.time ()))
-    (env_to_string (List.map (fun (k, _, v, _) -> (k, v)) to_add));
-  let switch_config =
-      OpamFile.Switch_config.with_env (to_add @ env) st.switch_config
-  in
-  let st = { st with switch_config } in
-  let switch = st.switch in
-  OpamFile.Switch_config.write
-    (OpamPath.Switch.switch_config gt.OpamStateTypes.root switch) st.switch_config;
+let add_env _switch _epoch _gt st =
+  (* Unix.putenv "SOURCE_DATE_EPOCH" (convert_date epoch); *)
+  (* let value = target ^ "=" ^ OpamSwitch.to_string switch in
+     "BUILD_PATH_PREFIX_MAP", value, Some "Build path prefix map"
+  *)
+(*  log "adding to environment (time %s): SOURCE_DATE_EPOCH=%s"
+    (convert_date (Unix.time ())) (convert_date epoch);
+  OpamConfigCommand.set_var_switch gt ~st
+    "SOURCE_DATE_EPOCH" (`Overwrite (convert_date epoch)) |>
+    function None -> failwith "couldn't set SOURCE_DATE_EPOCH" | Some x -> x *)
   st
 
 (** Steps *)
 let import_switch epoch switch export =
   OpamGlobalState.with_ `Lock_write @@ fun gt ->
   OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
-  let gt, st =
-    OpamSwitchCommand.install gt ~rt ~local_compiler:true
-      ~packages:[] ~update_config:false switch
+  let (), st =
+    OpamSwitchCommand.create gt ~rt ~update_config:false
+      ~invariant:OpamFormula.Empty switch (fun st -> (), st)
   in
   log "Switch %s created!"
     (OpamConsole.colorise `green (OpamSwitch.to_string switch));
   clean_switch := Some switch;
   let st = add_env switch epoch gt st in
+  log "SOURCE_DATE_EPOCH is %s" (Unix.getenv "SOURCE_DATE_EPOCH");
   log "now importing switch";
   let st = OpamSwitchCommand.import st export in
   log "Switch %s imported!"
@@ -224,9 +163,9 @@ let import_switch epoch switch export =
 let install_switch epoch ?repos compiler_pin compiler_version switch =
   OpamGlobalState.with_ `Lock_write @@ fun gt ->
   OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
-  let gt, st =
-    OpamSwitchCommand.install gt ~rt ~local_compiler:true ?repos
-      ~packages:[] ~update_config:false switch
+  let (), st =
+    OpamSwitchCommand.create gt ~rt ?repos ~update_config:false
+      ~invariant:OpamFormula.Empty switch (fun st -> (), st)
   in
   log "Switch %s created!"
     (OpamConsole.colorise `green (OpamSwitch.to_string switch));
@@ -253,19 +192,8 @@ let install_switch epoch ?repos compiler_pin compiler_version switch =
         "Both compiler-pin and compiler provided, choose one.";
   in
   let st = add_env switch epoch gt st in
+  log "added environment";
   drop_states ~gt ~rt ~st ()
-
-let update_switch_env epoch switch =
-  OpamGlobalState.with_ `Lock_write @@ fun gt ->
-  if not (OpamGlobalState.switch_exists gt switch) then
-    (drop_states ~gt ();
-     exit_error `Not_found "Switch %s doesn't exist"
-       (OpamSwitch.to_string switch |> OpamConsole.colorise `underline))
-  else
-    OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
-    OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
-    let st = add_env switch epoch gt st in
-    drop_states ~gt ~rt ~st ()
 
 let install switch atoms_or_locals =
   log "Install start";
@@ -290,6 +218,7 @@ let install switch atoms_or_locals =
   in
   log "Install %s" (OpamFormula.string_of_atoms atoms);
   let st = OpamClient.install st atoms in
+  log "Installed %s" (OpamFormula.string_of_atoms atoms);
   drop_states ~gt ~rt ~st ()
 
 let tracking_maps switch atoms_or_locals =
@@ -483,6 +412,8 @@ let common_start global_options build_options diffoscope =
   let root = OpamStateConfig.(!r.root_dir) in
   let config_f = OpamPath.config root in
   let already_init = OpamFile.exists config_f in
+  (* all environment variables need to be set/unset before the following line,
+     which forces the lazy Unix.environment in OpamStd *)
   OpamArg.apply_global_options global_options;
   OpamArg.apply_build_options build_options;
   if not already_init then
@@ -566,35 +497,35 @@ let rebuild ~sw ~bidir ~name epoch ~keep_build =
   tracking_map, build2nd, generation, packages
 
 (* Main function *)
-let build global_options build_options diffoscope keep_build twice compiler_pin compiler switch
+let build global_options build_options diffoscope keep_build twice compiler_pin compiler
     repos atoms_or_locals =
   if atoms_or_locals = [] then
     exit_error `Bad_arguments
       "I can't check reproductibility of nothing, by definition, it is";
+  let epoch = Unix.time () in
+  Unix.putenv "SOURCE_DATE_EPOCH" (convert_date epoch);
   common_start global_options build_options diffoscope;
-  (match compiler_pin, compiler, switch with
-   | None, None, None -> OpamStateConfig.update ~unlock_base:true ();
+  (match compiler_pin, compiler with
+   | None, None -> OpamStateConfig.update ~unlock_base:true ();
    | _ -> ());
   let name = project_name_from_arg atoms_or_locals in
   let bidir = OpamSystem.mk_temp_dir ~prefix:("bi-" ^ name) () in
   let sw = bidir ^ "/build" in
-  let switch' = OpamSwitch.of_string sw in
-  if switch = None then clean_switch := Some switch';
-  let epoch = Unix.time () in
-  (match switch with
-   | None -> install_switch epoch ?repos compiler_pin compiler switch'
-   | Some _ -> update_switch_env epoch switch');
-  install switch' atoms_or_locals;
+  let switch = OpamSwitch.of_string sw in
+  clean_switch := Some switch;
+  install_switch epoch ?repos compiler_pin compiler switch;
+  log "now installing";
+  install switch atoms_or_locals;
   log "installed";
-  let tracking_map = tracking_maps switch' atoms_or_locals in
+  let tracking_map = tracking_maps switch atoms_or_locals in
   log "%s" (OpamConsole.colorise `green "BUILD INFO");
-  let env = create_env epoch (OpamSwitch.to_string switch') in
+  let env = create_env epoch (OpamSwitch.to_string switch) in
   let generation = output_buildinfo_and_env bidir name tracking_map env in
   (* switch export - make a full one *)
-  export switch' bidir name;
+  export switch bidir name;
   let build1st =
     if twice || keep_build
-    then Some (copy_build_dir bidir generation switch')
+    then Some (copy_build_dir bidir generation switch)
     else None
   in
   cleanup ();
@@ -605,11 +536,12 @@ let build global_options build_options diffoscope keep_build twice compiler_pin 
 
 let rebuild global_options build_options diffoscope keep_build dir =
   if dir = "" then failwith "require build info directory" else begin
+    let name, generation, env = find_env dir in
+    let epoch = float_of_string @@ List.assoc "SOURCE_DATE_EPOCH" env in
+    Unix.putenv "SOURCE_DATE_EPOCH" (convert_date epoch);
     common_start global_options build_options diffoscope;
     OpamStateConfig.update ~unlock_base:true ();
-    let name, generation, env = find_env dir in
     let sw = List.assoc "SWITCH_PATH" env in
-    let epoch = float_of_string @@ List.assoc "SOURCE_DATE_EPOCH" env in
     let tracking_map_2nd, build2nd, my_gen, packages =
       rebuild ~sw ~bidir:dir ~name epoch ~keep_build
     in
@@ -643,8 +575,7 @@ let build_cmd =
         information for reproducing the same output.";
     `S "ARGUMENTS";
     `S "OPTIONS";
-    `S OpamArg.build_option_section;
-  ]
+  ] @ OpamArg.man_build_option_section
   in
   let twice =
     mk_flag ["twice"] "build twice, output differences (implies --keep-build)"
@@ -659,11 +590,6 @@ let build_cmd =
       "use the compiler [VERSION] for the temporary switch"
       Arg.(some string) None
   in
-  let use_switch =
-    mk_opt ["use-switch"] "SWITCH"
-      "use the switch instead of a newly generated ones"
-      Arg.(some string) None
-  in
   let repos =
     mk_opt ["repos"] "REPOS"
       "Include only packages that took their origin from one of the given \
@@ -671,7 +597,7 @@ let build_cmd =
       Arg.(some & list & OpamArg.repository_name) None
   in
   Term.((const build $ global_options $ build_options
-         $ diffoscope $ keep_build $ twice $ compiler_pin $ compiler $ use_switch
+         $ diffoscope $ keep_build $ twice $ compiler_pin $ compiler
          $ repos $ atom_or_local_list)),
   Term.info "build" ~man ~doc
 
@@ -687,8 +613,7 @@ let rebuild_cmd =
         can be used to make the differences human readable.";
     `S "ARGUMENTS";
     `S "OPTIONS";
-    `S OpamArg.build_option_section;
-  ]
+  ] @ OpamArg.man_build_option_section
   in
   let build_info =
     let doc = "use build information in the provided directory" in
