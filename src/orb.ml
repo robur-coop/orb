@@ -109,7 +109,7 @@ let create_env epoch dir =
     [] (custom_env ())
 
 let env_to_string env =
-  String.concat "\n" ("" :: List.map (fun (k, v) -> k ^ "=" ^ v) env)
+  String.concat "\n" (List.map (fun (k, v) -> k ^ "=" ^ v) env)
 
 let env_of_string str =
   let lines = String.split_on_char '\n' str in
