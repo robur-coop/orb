@@ -80,6 +80,7 @@ let drop_states ?gt ?rt ?st () =
 let dot_switch = ".opam-switch"
 let dot_hash = ".build-hashes"
 let dot_env = ".build-environment"
+let dot_packages = ".system-packages"
 let dot_build = ".build"
 let dot_diffoscope = ".diffoscope"
 
@@ -316,9 +317,17 @@ let output_buildinfo_and_env dir name map env =
       log "writing %s" (OpamFilename.to_string fn);
       write_file fn value)
     map;
+  let pkgs, _ = filename (name ^ dot_packages) in
+  let r = Sys.command ("/usr/sbin/pkg query %n-%v > " ^ OpamFilename.to_string pkgs) in
+  if r <> 0 then log "couldn't dump packages";
   let fn, gen = filename (name ^ dot_env) in
   write_file fn (env_to_string env);
   gen
+
+let install_system_packages dir name generation =
+  let packages = Printf.sprintf "%s/%s%s.%d" dir name dot_packages generation in
+  let r = Sys.command ("cat " ^ packages ^ " | xargs /usr/sbin/pkg install -y") in
+  if r <> 0 then log "couldn't install packages"
 
 let find_build_dir generation dir =
   let dir = Printf.sprintf "%s/%d%s" dir generation dot_build in
@@ -566,6 +575,7 @@ let rebuild global_options build_options diffoscope keep_build dir =
   if dir = "" then failwith "require build info directory" else begin
     strip_env ();
     let name, generation, env = find_env dir in
+    install_system_packages dir name generation;
     common_start global_options build_options diffoscope;
     OpamStateConfig.update ~unlock_base:true ();
     let sw = List.assoc "SWITCH_PATH" env in
