@@ -516,6 +516,33 @@ let rebuild ~sw ~bidir ~name epoch ~keep_build =
   log "wrote tracking map";
   tracking_map, build2nd, generation, packages
 
+let add_repo s (name, url) =
+  (* todo trust anchors *)
+  let url = OpamUrl.parse url in
+  OpamRepositoryCommand.add s name url None
+
+let add_repos repos =
+  let repos = match repos with
+    | None | Some [] ->
+      [ OpamRepositoryName.of_string "default", "https://opam.ocaml.org" ]
+    | Some xs ->
+      List.map (fun s -> match String.split_on_char ':' s with
+          | name :: rest ->
+            OpamRepositoryName.of_string name, String.concat ":" rest
+          | _ -> failwith "unknown repo") xs
+  in
+  let names = List.map fst repos in
+  OpamGlobalState.with_ `Lock_none (fun gt ->
+      OpamRepositoryState.with_ `Lock_write gt (fun rt ->
+          let rt = List.fold_left add_repo rt repos in
+          let failed, _rt = OpamRepositoryCommand.update_with_auto_upgrade rt names in
+          List.iter
+            (fun rn -> log "repo update failed for %s"
+                (OpamRepositoryName.to_string rn))
+            failed
+        ));
+  names
+
 (* Main function *)
 let build global_options build_options diffoscope keep_build twice compiler_pin compiler
     repos out_dir atoms_or_locals =
@@ -536,7 +563,8 @@ let build global_options build_options diffoscope keep_build twice compiler_pin 
   let sw = tmp_dir ^ "/build" in
   let switch = OpamSwitch.of_string sw in
   clean_switch := Some switch;
-  install_switch ?repos compiler_pin compiler switch;
+  let repos = add_repos repos in
+  install_switch ~repos compiler_pin compiler switch;
   log "now installing";
   install switch atoms_or_locals;
   log "installed";
@@ -618,7 +646,7 @@ let build_cmd =
     mk_opt ["repos"] "REPOS"
       "Include only packages that took their origin from one of the given \
        repositories."
-      Arg.(some & list & OpamArg.repository_name) None
+      Arg.(some & list & string) None
   in
   let out_dir =
     mk_opt [ "out" ] "[DIR]"
