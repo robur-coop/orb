@@ -116,7 +116,8 @@ let env_of_string str =
   List.fold_left (fun acc line ->
       match String.split_on_char '=' line with
       | [ key ; value ] -> (key, value) :: acc
-      | _ -> log "bad environment %s" line ; acc)
+      | [ "" ] -> acc
+      | _ -> Printf.printf "bad environment line %s\n" line ; acc)
     [] lines
 
 let env_matches env =
@@ -436,25 +437,32 @@ let project_name_from_dir dir = (* the first <name>.opam-switch *)
   | None -> failwith "couldn't find switch"
   | Some t -> OpamFilename.(Base.to_string (basename (chop_extension t)))
 
+let set_env_from_file env =
+  let epoch = List.assoc "SOURCE_DATE_EPOCH" env in
+  Unix.putenv "SOURCE_DATE_EPOCH" epoch;
+  let home = List.assoc "HOME" env in
+  Unix.putenv "HOME" home;
+  let path = List.assoc "PATH" env in
+  Unix.putenv "PATH" path
+
 let find_env dir =
   let envs =
     List.filter
       (fun t -> OpamFilename.(check_suffix (chop_extension t) dot_env))
       (OpamFilename.files (OpamFilename.Dir.of_string dir))
   in
-  let rec good_env = function
+  let env, filename = match envs with
     | [] -> failwith "no environment found"
-    | file :: files ->
+    | file :: _files ->
       let env = env_of_string (read_file file) in
+      (* need to set HOME and PATH and SOURCE_DATE_EPOCH, since this env is captured by opam *)
+      set_env_from_file env;
       if env_matches env then begin
         log "environment %s matches, using it" (OpamFilename.to_string file);
         env, file
-      end else begin
-        log "environment %s does not match" (OpamFilename.to_string file);
-        good_env files
-      end
+      end else
+        failwith "environment does not match"
   in
-  let env, filename = good_env envs in
   let name = OpamFilename.(Base.to_string (basename (chop_extension (chop_extension filename)))) in
   let generation =
     match OpamStd.String.rcut_at (OpamFilename.to_string filename) '.' with
@@ -494,14 +502,6 @@ let strip_env ?(preserve = []) () =
       in
       if List.mem key preserve then () else unsetenv key)
     (Unix.environment ())
-
-let set_env_from_file env =
-  let epoch = List.assoc "SOURCE_DATE_EPOCH" env in
-  Unix.putenv "SOURCE_DATE_EPOCH" epoch;
-  let home = List.assoc "HOME" env in
-  Unix.putenv "HOME" home;
-  let path = List.assoc "PATH" env in
-  Unix.putenv "PATH" path
 
 let rebuild ~sw ~bidir ~name epoch ~keep_build =
   let switch = OpamSwitch.of_string sw in
@@ -566,7 +566,6 @@ let rebuild global_options build_options diffoscope keep_build dir =
   if dir = "" then failwith "require build info directory" else begin
     strip_env ();
     let name, generation, env = find_env dir in
-    set_env_from_file env;
     common_start global_options build_options diffoscope;
     OpamStateConfig.update ~unlock_base:true ();
     let sw = List.assoc "SWITCH_PATH" env in
