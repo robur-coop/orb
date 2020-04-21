@@ -9,7 +9,6 @@
 (**************************************************************************)
 
 (* TODO record missing inputs:
-   - host system packages (that are relevant)
    - cpu features etc. for cpuid
 *)
 
@@ -191,19 +190,6 @@ let install switch atoms_or_locals =
   OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
   let st, atoms =
     OpamAuxCommands.autopin st ~simulate:true atoms_or_locals
-  in
-  (* Remove already installed ones *)
-  let st =
-    let installed =
-      OpamPackage.Name.Set.Op.(
-        OpamPackage.names_of_packages
-          (OpamFormula.packages_of_atoms st.packages atoms)
-        %% OpamPackage.names_of_packages st.installed)
-    in
-    if OpamPackage.Name.Set.is_empty installed then st else
-      (log "Remove previously installed packages: %s"
-         (OpamPackage.Name.Set.to_string installed);
-       OpamClient.remove st ~autoremove:false ~force:false atoms)
   in
   log "Install %s" (OpamFormula.string_of_atoms atoms);
   let st = OpamClient.install st atoms in
