@@ -523,7 +523,7 @@ let rebuild ~sw ~bidir ~name epoch ~keep_build =
 
 (* Main function *)
 let build global_options build_options diffoscope keep_build twice compiler_pin compiler
-    repos atoms_or_locals =
+    repos out_dir atoms_or_locals =
   if atoms_or_locals = [] then
     exit_error `Bad_arguments
       "I can't check reproductibility of nothing, by definition, it is";
@@ -536,8 +536,9 @@ let build global_options build_options diffoscope keep_build twice compiler_pin 
    | None, None -> OpamStateConfig.update ~unlock_base:true ();
    | _ -> ());
   let name = project_name_from_arg atoms_or_locals in
-  let bidir = OpamSystem.mk_temp_dir ~prefix:("bi-" ^ name) () in
-  let sw = bidir ^ "/build" in
+  let tmp_dir = OpamSystem.mk_temp_dir ~prefix:("bi-" ^ name) () in
+  let bidir = match out_dir with None -> tmp_dir | Some dir -> dir in
+  let sw = tmp_dir ^ "/build" in
   let switch = OpamSwitch.of_string sw in
   clean_switch := Some switch;
   install_switch ?repos compiler_pin compiler switch;
@@ -624,9 +625,14 @@ let build_cmd =
        repositories."
       Arg.(some & list & OpamArg.repository_name) None
   in
+  let out_dir =
+    mk_opt [ "out" ] "[DIR]"
+      "store build info into [DIR] (defaults to a temporary directory)"
+      Arg.(some string) None
+  in
   Term.((const build $ global_options $ build_options
          $ diffoscope $ keep_build $ twice $ compiler_pin $ compiler
-         $ repos $ atom_or_local_list)),
+         $ repos $ out_dir $ atom_or_local_list)),
   Term.info "build" ~man ~doc
 
 let rebuild_cmd =
