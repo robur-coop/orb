@@ -392,15 +392,30 @@ let generate_diffs root1 root2 final_map dir =
 let common_start global_options build_options diffoscope =
   if diffoscope && OpamSystem.resolve_command "diffoscope" = None then
     exit_error `Not_found "diffoscope not found";
-  let root = OpamStateConfig.(!r.root_dir) in
-  let config_f = OpamPath.config root in
-  let already_init = OpamFile.exists config_f in
   (* all environment variables need to be set/unset before the following line,
      which forces the lazy Unix.environment in OpamStd *)
   OpamArg.apply_global_options global_options;
   OpamArg.apply_build_options build_options;
-  if not already_init then
-    exit_error `False "orb needs an already initialised opam";
+  let root = OpamStateConfig.(!r.root_dir) in
+  let config_f = OpamPath.config root in
+  let already_init = OpamFile.exists config_f in
+  if not already_init then begin (* could also be assert *)
+    let init_config = OpamInitDefaults.init_config () in
+    let repo_url = "/tmp/nonexisting" in
+    write_file
+      OpamFilename.(create (Dir.of_string repo_url) (Base.of_string "repo"))
+      "opam-version: \"2.0\"";
+    let repo = OpamTypes.{ repo_name = OpamRepositoryName.of_string "empty" ;
+                           repo_url = OpamUrl.parse repo_url ;
+                           repo_trust = None }
+    in
+    let gt, rt, _default_compiler =
+      OpamClient.init ~init_config ~interactive:false ~repo ~bypass_checks:true
+        ~update_config:false ~completion:false
+        (OpamStd.Sys.guess_shell_compat ())
+    in
+    drop_states ~gt ~rt ();
+  end;
   OpamCoreConfig.update ~precise_tracking:true ~answer:(Some true) ();
   OpamStd.Sys.at_exit cleanup
 
@@ -506,14 +521,10 @@ let rebuild ~sw ~bidir ~name epoch ~keep_build =
     List.map (fun a -> `Atom (a.OpamPackage.name, None))
       (OpamPackage.Set.elements packages)
   in
-  log "switch imported (installed stuff)";
   let tracking_map = tracking_maps switch atoms_or_locals in
-  log "tracking map";
-  log "%s" (OpamConsole.colorise `green "BUILD INFO");
   let env = create_env epoch sw in
   let generation = output_buildinfo_and_env bidir name tracking_map env in
   let build2nd = if keep_build then copy_build_dir bidir generation switch else sw in
-  log "wrote tracking map";
   tracking_map, build2nd, generation, packages
 
 let add_repo s (name, url) =
@@ -565,11 +576,8 @@ let build global_options build_options diffoscope keep_build twice compiler_pin 
   clean_switch := Some switch;
   let repos = add_repos repos in
   install_switch ~repos compiler_pin compiler switch;
-  log "now installing";
   install switch atoms_or_locals;
-  log "installed";
   let tracking_map = tracking_maps switch atoms_or_locals in
-  log "%s" (OpamConsole.colorise `green "BUILD INFO");
   let env = create_env epoch (OpamSwitch.to_string switch) in
   let generation = output_buildinfo_and_env bidir name tracking_map env in
   (* switch export - make a full one *)
