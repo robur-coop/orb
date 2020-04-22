@@ -287,6 +287,40 @@ let diff_map track1 track2 =
       else OpamPackage.Map.add pkg file_map map
     ) track1 OpamPackage.Map.empty
 
+let dump_system_packages filename =
+  match OpamSysPoll.os_family () with
+  | Some "bsd" ->
+    begin match OpamSysPoll.os_distribution () with
+      | Some "freebsd" ->
+        let r = Sys.command ("/usr/sbin/pkg query %n-%v > " ^ filename) in
+        if r <> 0 then log "failed to dump system packages (exit %d)" r
+      | Some distrib ->
+        log "unsupported OS for host system packages (bsd %s)" distrib
+      | None ->
+        log "unsupported OS (no system packages), bsd without distribution"
+    end
+  | Some family ->
+    log "unsupported OS for host system packages %s" family
+  | None ->
+    log "unsupported OS (no system packages), no family"
+
+let restore_system_packages filename =
+  match OpamSysPoll.os_family () with
+  | Some "bsd" ->
+    begin match OpamSysPoll.os_distribution () with
+      | Some "freebsd" ->
+        let r = Sys.command ("cat " ^ filename ^ " | xargs /usr/sbin/pkg install -y") in
+        if r <> 0 then log "couldn't install packages"
+      | Some distrib ->
+        log "unsupported OS for host system packages (bsd %s)" distrib
+      | None ->
+        log "unsupported OS (no system packages), bsd without distribution"
+    end
+  | Some family ->
+    log "unsupported OS for host system packages %s" family
+  | None ->
+    log "unsupported OS (no system packages), no family"
+
 let output_buildinfo_and_env dir name map env =
   let filename post =
     let rec fn n =
@@ -304,16 +338,14 @@ let output_buildinfo_and_env dir name map env =
       write_file fn value)
     map;
   let pkgs, _ = filename (name ^ dot_packages) in
-  let r = Sys.command ("/usr/sbin/pkg query %n-%v > " ^ OpamFilename.to_string pkgs) in
-  if r <> 0 then log "couldn't dump packages";
+  dump_system_packages (OpamFilename.to_string pkgs);
   let fn, gen = filename (name ^ dot_env) in
   write_file fn (env_to_string env);
   gen
 
 let install_system_packages dir name generation =
-  let packages = Printf.sprintf "%s/%s%s.%d" dir name dot_packages generation in
-  let r = Sys.command ("cat " ^ packages ^ " | xargs /usr/sbin/pkg install -y") in
-  if r <> 0 then log "couldn't install packages"
+  let filename = Printf.sprintf "%s/%s%s.%d" dir name dot_packages generation in
+  restore_system_packages filename
 
 let find_build_dir generation dir =
   let dir = Printf.sprintf "%s/%d%s" dir generation dot_build in
