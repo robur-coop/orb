@@ -511,7 +511,11 @@ let set_env_from_file env =
   let home = List.assoc "HOME" env in
   Unix.putenv "HOME" home;
   let path = List.assoc "PATH" env in
-  Unix.putenv "PATH" path
+  Unix.putenv "PATH" path;
+  let sw = List.assoc "SWITCH_PATH" env in
+  let prefix = sw ^ "/_opam" in
+  Unix.putenv "PREFIX" prefix;
+  Unix.putenv "PKG_CONFIG_PATH" (prefix ^ "/lib/pkgconfig")
 
 let find_env dir =
   let env_file = Filename.concat dir dot_env in
@@ -624,10 +628,6 @@ let build global_options build_options diffoscope keep_build twice compiler_pin 
     | None -> Unix.time ()
   in
   Unix.putenv "SOURCE_DATE_EPOCH" (convert_date epoch);
-  common_start global_options build_options diffoscope;
-  (match compiler_pin, compiler with
-   | None, None -> OpamStateConfig.update ~unlock_base:true ();
-   | _ -> ());
   let name = project_name_from_arg atoms_or_locals in
   let tmp_dir = match switch_name with
     | None -> OpamSystem.mk_temp_dir ~prefix:("bi-" ^ name) ()
@@ -637,6 +637,13 @@ let build global_options build_options diffoscope keep_build twice compiler_pin 
   let bidir = bidir ^ "/" ^ name in
   let sw = tmp_dir ^ "/build" in
   let switch = OpamSwitch.of_string sw in
+  let pre = sw ^ "/_opam" in
+  Unix.putenv "PREFIX" pre;
+  Unix.putenv "PKG_CONFIG_PATH" (pre ^ "/lib/pkgconfig");
+  common_start global_options build_options diffoscope;
+  (match compiler_pin, compiler with
+   | None, None -> OpamStateConfig.update ~unlock_base:true ();
+   | _ -> ());
   clean_switch := Some switch;
   let repos = add_repos repos in
   install_switch ~repos compiler_pin compiler switch;
