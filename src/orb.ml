@@ -8,16 +8,19 @@
 (*                                                                        *)
 (**************************************************************************)
 
-(* TODO record missing inputs:
-   - cpu features etc. for cpuid
-*)
-
 open OpamStateTypes
 
 (** Utils *)
 let log fmt =
   let orb = OpamConsole.(colorise `bold "[ORB]" |> colorise `cyan) in
   OpamConsole.msg ("%s "^^fmt^^"\n") orb
+
+let ts now =
+  let open Unix in
+  let tm = gmtime now in
+  Format.sprintf "%04d-%02d-%02dT%02d:%02d:%02dZ"
+    (tm.tm_year + 1900) (tm.tm_mon + 1) tm.tm_mday
+    tm.tm_hour tm.tm_min tm.tm_sec
 
 let read_file file =
   let filename = OpamFilename.to_string file in
@@ -76,15 +79,15 @@ let drop_states ?gt ?rt ?st () =
   OpamStd.Option.iter OpamRepositoryState.drop rt;
   OpamStd.Option.iter OpamGlobalState.drop gt
 
-let dot_switch = ".opam-switch"
+let dot_switch = "opam-switch"
 let dot_hash = ".build-hashes"
-let dot_env = ".build-environment"
-let dot_packages = ".system-packages"
-let dot_build = ".build"
+let dot_env = "build-environment"
+let dot_packages = "system-packages"
+let dot_build = "build"
 let dot_diffoscope = ".diffoscope"
 
-let switch_filename dir name =
-  let fn = Printf.sprintf "%s/%s%s" dir name dot_switch in
+let switch_filename dir =
+  let fn = Printf.sprintf "%s/%s" dir dot_switch in
   OpamFile.make (OpamFilename.of_string fn)
 
 let convert_date x = string_of_int (int_of_float x)
@@ -102,7 +105,6 @@ let create_env epoch dir =
     "PATH", Unix.getenv "PATH" ;
     "SWITCH_PATH", dir;
     "SOURCE_DATE_EPOCH", convert_date epoch;
-    "BUILD_DATE", convert_date (Unix.time ());
   ] @
   List.fold_left
     (fun acc (k, v) -> match v with None -> acc | Some v -> (k,v)::acc)
@@ -231,8 +233,8 @@ let tracking_maps switch atoms_or_locals =
   drop_states ~gt ~st ();
   tr
 
-let read_tracking_map ?(generation = 0) dir package =
-  let nam = Printf.sprintf "%s/%s%s.%d" dir package dot_hash generation in
+let read_tracking_map dir package =
+  let nam = Printf.sprintf "%s/%s%s" dir package dot_hash in
   OpamFile.Changes.read_opt (OpamFile.make (OpamFilename.of_string nam))
 
 type diff =
@@ -321,48 +323,72 @@ let restore_system_packages filename =
   | None ->
     log "unsupported OS (no system packages), no family"
 
-let output_buildinfo_and_env dir name map env =
-  let filename post =
-    let rec fn n =
-      let filename = post ^ "." ^ string_of_int n in
-      let file = Filename.concat dir filename in
-      if Sys.file_exists file then fn (succ n) else filename, n
-    in
-    let file, gen = fn 0 in
-    OpamFilename.(create (Dir.of_string dir) (Base.of_string file)), gen
+let output_buildinfo_and_env ~skip_system sw_prefix dir now map env =
+  let maps =
+    OpamPackage.Map.fold (fun pkg map acc ->
+        let value = OpamFile.Changes.write_to_string map in
+        let fn = OpamPackage.Name.to_string pkg.name ^ dot_hash in
+        (fn, value) :: acc)
+      map []
   in
-  OpamPackage.Map.iter (fun pkg map ->
-      let value = OpamFile.Changes.write_to_string map in
-      let fn, _ = filename (OpamPackage.Name.to_string pkg.name ^ dot_hash) in
-      log "writing %s" (OpamFilename.to_string fn);
-      write_file fn value)
+  let hash =
+    let v = List.map (fun (n, v) -> n ^ ":" ^ v) maps in
+    Digest.to_hex (Digest.string (String.concat "\n" v))
+  in
+  (* output to <dir>/<hash>/<timestamp>/ *)
+  let dir = Filename.concat dir (Filename.concat hash (ts now)) in
+  let prefix = OpamFilename.Dir.of_string dir in
+  (* copy artifacts *)
+  OpamPackage.Map.iter (fun _ map ->
+      OpamStd.String.Map.iter (fun name -> function
+          | OpamDirTrack.Added _ ->
+            let src = Format.sprintf "%s/_opam/%s" sw_prefix name
+            and tgt = Format.sprintf "%s/%s" dir name
+            in
+            let r = Sys.command ("mkdir -p " ^ Filename.dirname tgt) in
+            if r <> 0 then log "failed to create directory for %s" tgt
+            else begin
+              let r = Sys.command ("cp " ^ src ^ " " ^ tgt) in
+              if r <> 0 then log "failed to copy %s to %s" src tgt
+            end
+          | _ -> ()) map)
     map;
-  let pkgs, _ = filename (name ^ dot_packages) in
-  dump_system_packages (OpamFilename.to_string pkgs);
-  let fn, gen = filename (name ^ dot_env) in
+  (* output metadata: hashes, environment, system packages *)
+  let filename file =
+    OpamFilename.(create prefix (Base.of_string file))
+  in
+  List.iter (fun (n, v) ->
+      let fn = filename n in
+      log "writing %s" (OpamFilename.to_string fn);
+      write_file fn v) maps;
+  if not skip_system then begin
+    let pkgs = filename dot_packages in
+    dump_system_packages (OpamFilename.to_string pkgs)
+  end;
+  let fn = filename dot_env in
   write_file fn (env_to_string env);
-  gen
+  dir
 
-let install_system_packages dir name generation =
-  let filename = Printf.sprintf "%s/%s%s.%d" dir name dot_packages generation in
+let install_system_packages dir =
+  let filename = Printf.sprintf "%s/%s" dir dot_packages in
   restore_system_packages filename
 
-let find_build_dir generation dir =
-  let dir = Printf.sprintf "%s/%d%s" dir generation dot_build in
+let find_build_dir dir =
+  let dir = Printf.sprintf "%s/%s" dir dot_build in
   if Sys.file_exists dir then Some dir else None
 
-let copy_build_dir dir generation switch =
-  let target = Printf.sprintf "%s/%d%s" dir generation dot_build in
+let copy_build_dir prefix switch =
+  let target = Printf.sprintf "%s/%s" prefix dot_build in
   log "preserving build dir in %s" target;
   OpamFilename.copy_dir
     ~src:(OpamFilename.Dir.of_string (OpamSwitch.to_string switch))
     ~dst:(OpamFilename.Dir.of_string target);
   target
 
-let export switch dir name =
+let export switch dir =
   OpamGlobalState.with_ `Lock_none @@ fun gt ->
   OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
-  let switch_out = switch_filename dir name in
+  let switch_out = switch_filename dir in
   OpamSwitchCommand.export rt ~freeze:true ~full:true ~switch (Some switch_out);
   drop_states ~gt ~rt ()
 
@@ -488,32 +514,22 @@ let set_env_from_file env =
   Unix.putenv "PATH" path
 
 let find_env dir =
-  let envs =
-    List.filter
-      (fun t -> OpamFilename.(check_suffix (chop_extension t) dot_env))
-      (OpamFilename.files (OpamFilename.Dir.of_string dir))
+  let env_file = Filename.concat dir dot_env in
+  let env = env_of_string (read_file (OpamFilename.of_string env_file)) in
+  (* need to set HOME and PATH and SOURCE_DATE_EPOCH, since this env is captured by opam *)
+  set_env_from_file env;
+  (if env_matches env then
+     log "environment matches, using it"
+   else
+     failwith "environment does not match");
+  let started =
+    let full = Unix.readlink dir in
+    let xs = String.split_on_char '/' full in
+    match List.rev xs with
+    | date :: _ -> date
+    | _ -> invalid_arg "couldn't determine name and date"
   in
-  let env, filename = match envs with
-    | [] -> failwith "no environment found"
-    | file :: _files ->
-      let env = env_of_string (read_file file) in
-      (* need to set HOME and PATH and SOURCE_DATE_EPOCH, since this env is captured by opam *)
-      set_env_from_file env;
-      if env_matches env then begin
-        log "environment %s matches, using it" (OpamFilename.to_string file);
-        env, file
-      end else
-        failwith "environment does not match"
-  in
-  let name = OpamFilename.(Base.to_string (basename (chop_extension (chop_extension filename)))) in
-  let generation =
-    match OpamStd.String.rcut_at (OpamFilename.to_string filename) '.' with
-    | None -> log "no generation found in %s" (OpamFilename.to_string filename); 0
-    | Some (_, x) ->
-      log "generation %s" x;
-      int_of_string x
-  in
-  name, generation, env
+  started, env
 
 external unsetenv : string -> unit = "orb_unsetenv"
 
@@ -545,9 +561,10 @@ let strip_env ?(preserve = []) () =
       if List.mem key preserve then () else unsetenv key)
     (Unix.environment ())
 
-let rebuild ~sw ~bidir ~name epoch ~keep_build =
+let rebuild ~skip_system ~sw ~bidir epoch ~keep_build =
+  let started = Unix.time () in
   let switch = OpamSwitch.of_string sw in
-  let switch_in = switch_filename bidir name in
+  let switch_in = switch_filename (bidir ^ "/latest") in
   let packages = import_switch switch (Some switch_in) in
   let atoms_or_locals =
     List.map (fun a -> `Atom (a.OpamPackage.name, None))
@@ -555,9 +572,9 @@ let rebuild ~sw ~bidir ~name epoch ~keep_build =
   in
   let tracking_map = tracking_maps switch atoms_or_locals in
   let env = create_env epoch sw in
-  let generation = output_buildinfo_and_env bidir name tracking_map env in
-  let build2nd = if keep_build then copy_build_dir bidir generation switch else sw in
-  tracking_map, build2nd, generation, packages
+  let prefix = output_buildinfo_and_env ~skip_system sw bidir started tracking_map env in
+  let build2nd = if keep_build then copy_build_dir prefix switch else sw in
+  tracking_map, build2nd, started, packages
 
 let add_repo s (name, url) =
   (* todo trust anchors *)
@@ -586,23 +603,38 @@ let add_repos repos =
         ));
   names
 
+let drop_slash s =
+  let l = String.length s in
+  if l > 0 && String.get s (l - 1) = '/' then
+    String.sub s 0 (l - 1)
+  else
+    s
+
 (* Main function *)
 let build global_options build_options diffoscope keep_build twice compiler_pin compiler
-    repos out_dir atoms_or_locals =
+    repos out_dir switch_name epoch skip_system atoms_or_locals =
+  let started = Unix.time () in
   if atoms_or_locals = [] then
     exit_error `Bad_arguments
       "I can't check reproductibility of nothing, by definition, it is";
   strip_env ~preserve:["HOME";"PATH"] ();
   strip_path ();
-  let epoch = Unix.time () in
+  let epoch = match epoch with
+    | Some x -> float_of_string x
+    | None -> Unix.time ()
+  in
   Unix.putenv "SOURCE_DATE_EPOCH" (convert_date epoch);
   common_start global_options build_options diffoscope;
   (match compiler_pin, compiler with
    | None, None -> OpamStateConfig.update ~unlock_base:true ();
    | _ -> ());
   let name = project_name_from_arg atoms_or_locals in
-  let tmp_dir = OpamSystem.mk_temp_dir ~prefix:("bi-" ^ name) () in
-  let bidir = match out_dir with None -> tmp_dir | Some dir -> dir in
+  let tmp_dir = match switch_name with
+    | None -> OpamSystem.mk_temp_dir ~prefix:("bi-" ^ name) ()
+    | Some x -> drop_slash x
+  in
+  let bidir = match out_dir with None -> tmp_dir | Some dir -> drop_slash dir in
+  let bidir = bidir ^ "/" ^ name in
   let sw = tmp_dir ^ "/build" in
   let switch = OpamSwitch.of_string sw in
   clean_switch := Some switch;
@@ -611,41 +643,47 @@ let build global_options build_options diffoscope keep_build twice compiler_pin 
   install switch atoms_or_locals;
   let tracking_map = tracking_maps switch atoms_or_locals in
   let env = create_env epoch (OpamSwitch.to_string switch) in
-  let generation = output_buildinfo_and_env bidir name tracking_map env in
+  let prefix = output_buildinfo_and_env ~skip_system sw bidir started tracking_map env in
   (* switch export - make a full one *)
-  export switch bidir name;
+  export switch prefix;
+  let latest = bidir ^ "/latest" in
+  if Sys.file_exists latest then Sys.remove latest;
+  Unix.symlink ~to_dir:true prefix latest;
   let build1st =
-    if twice || keep_build
-    then Some (copy_build_dir bidir generation switch)
+    if keep_build
+    then Some (copy_build_dir prefix switch)
     else None
   in
   cleanup ();
   if twice then
-    let tracking_map', build2nd, my_gen, _ = rebuild ~sw ~bidir ~name epoch ~keep_build:true in
-    let dir = Printf.sprintf "%s/%d-%d%s" bidir generation my_gen dot_diffoscope in
-    compare_builds tracking_map tracking_map' dir  build1st build2nd diffoscope
+    let tracking_map', build2nd, started', _ =
+      rebuild ~skip_system ~sw ~bidir epoch ~keep_build
+    in
+    let dir = Printf.sprintf "%s/%s-%s%s" bidir (ts started) (ts started') dot_diffoscope in
+    compare_builds tracking_map tracking_map' dir build1st build2nd diffoscope
 
-let rebuild global_options build_options diffoscope keep_build dir =
+let rebuild global_options build_options diffoscope keep_build skip_system dir =
   if dir = "" then failwith "require build info directory" else begin
     strip_env ();
-    let name, generation, env = find_env dir in
-    install_system_packages dir name generation;
+    let old = drop_slash dir ^ "/latest" in
+    let old_started, env = find_env old in
+    if not skip_system then install_system_packages old;
     common_start global_options build_options diffoscope;
     OpamStateConfig.update ~unlock_base:true ();
     let sw = List.assoc "SWITCH_PATH" env in
     let epoch = float_of_string (List.assoc "SOURCE_DATE_EPOCH" env) in
-    let tracking_map_2nd, build2nd, my_gen, packages =
-      rebuild ~sw ~bidir:dir ~name epoch ~keep_build
+    let tracking_map_2nd, build2nd, started', packages =
+      rebuild ~skip_system ~sw ~bidir:dir epoch ~keep_build
     in
     let tracking_map_1st = OpamPackage.Set.fold (fun pkg acc ->
-        match read_tracking_map ~generation dir (OpamPackage.Name.to_string pkg.OpamPackage.name) with
+        match read_tracking_map old (OpamPackage.Name.to_string pkg.OpamPackage.name) with
         | None -> log "no tracking map for %s found" (OpamPackage.Name.to_string pkg.OpamPackage.name); acc
         | Some tm -> OpamPackage.Map.add pkg tm acc)
         packages OpamPackage.Map.empty
     in
-    let build1st = find_build_dir generation dir in
+    let build1st = find_build_dir old in
     log "comparing with old build dir %s" (match build1st with None -> "no" | Some x -> x);
-    let dir = Printf.sprintf "%s/%d-%d%s" dir generation my_gen dot_diffoscope in
+    let dir = Printf.sprintf "%s/%s-%s%s" dir (ts started') old_started dot_diffoscope in
     compare_builds tracking_map_1st tracking_map_2nd dir build1st build2nd diffoscope
   end
 
@@ -657,6 +695,9 @@ let diffoscope = mk_flag ["diffoscope"] "use diffoscope to generate a report"
 
 let keep_build =
   mk_flag ["keep-build"] "keep built temporary products"
+
+let skip_system =
+  mk_flag [ "skip-system" ] "skip system packages"
 
 let build_cmd =
   let doc = "Build opam packages and output build information for rebuilding" in
@@ -670,7 +711,7 @@ let build_cmd =
   ] @ OpamArg.man_build_option_section
   in
   let twice =
-    mk_flag ["twice"] "build twice, output differences (implies --keep-build)"
+    mk_flag [ "twice" ] "build twice, output differences"
   in
   let compiler_pin =
     mk_opt [ "compiler-pin" ] "[DIR]"
@@ -683,19 +724,31 @@ let build_cmd =
       Arg.(some string) None
   in
   let repos =
-    mk_opt ["repos"] "REPOS"
+    mk_opt [ "repos" ] "REPOS"
       "Include only packages that took their origin from one of the given \
        repositories."
       Arg.(some & list & string) None
   in
   let out_dir =
     mk_opt [ "out" ] "[DIR]"
-      "store build info into [DIR] (defaults to a temporary directory)"
+      "Use [DIR] as build info prefix (defaults to a temporary directory), \
+       output will created in [DIR]/package/hash/timestamp"
+      Arg.(some string) None
+  in
+  let switch_name =
+    mk_opt [ "switch-name" ] "[DIR]"
+      "use [DIR] as switch name (defaults to a temporary directory)"
+      Arg.(some string) None
+  in
+  let source_date_epoch =
+    mk_opt [ "date" ] "DATE"
+      "Use date as source date epoch (seconds since Unix epoch, defaults to Unix.time)."
       Arg.(some string) None
   in
   Term.((const build $ global_options $ build_options
          $ diffoscope $ keep_build $ twice $ compiler_pin $ compiler
-         $ repos $ out_dir $ atom_or_local_list)),
+         $ repos $ out_dir $ switch_name $ source_date_epoch $ skip_system
+         $ atom_or_local_list)),
   Term.info "build" ~man ~doc
 
 let rebuild_cmd =
@@ -716,7 +769,8 @@ let rebuild_cmd =
     let doc = "use build information in the provided directory" in
     Arg.(value & pos 0 string "" & info [] ~doc ~docv:"DIR")
   in
-  Term.((const rebuild $ global_options $ build_options $ diffoscope $ keep_build $ build_info)),
+  Term.((const rebuild $ global_options $ build_options $ diffoscope
+         $ keep_build $ skip_system $ build_info)),
   Term.info "rebuild" ~man ~doc
 
 let help man_format cmds = function
