@@ -644,7 +644,7 @@ let build global_options build_options diffoscope keep_build twice compiler_pin 
   (match compiler_pin, compiler with
    | None, None -> OpamStateConfig.update ~unlock_base:true ();
    | _ -> ());
-  clean_switch := Some switch;
+  if not keep_build then clean_switch := Some switch;
   let repos = add_repos repos in
   install_switch ~repos compiler_pin compiler switch;
   install switch atoms_or_locals;
