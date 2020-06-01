@@ -336,7 +336,8 @@ let output_buildinfo_and_env ~skip_system sw_prefix dir now map env =
     Digest.to_hex (Digest.string (String.concat "\n" v))
   in
   (* output to <dir>/<hash>/<timestamp>/ *)
-  let dir = Filename.concat dir (Filename.concat hash (ts now)) in
+  let reldir = Filename.concat hash (ts now) in
+  let dir = Filename.concat dir reldir in
   let prefix = OpamFilename.Dir.of_string dir in
   (* copy artifacts *)
   OpamPackage.Map.iter (fun _ map ->
@@ -367,7 +368,7 @@ let output_buildinfo_and_env ~skip_system sw_prefix dir now map env =
   end;
   let fn = filename dot_env in
   write_file fn (env_to_string env);
-  dir
+  dir, reldir
 
 let install_system_packages dir =
   let filename = Printf.sprintf "%s/%s" dir dot_packages in
@@ -576,7 +577,9 @@ let rebuild ~skip_system ~sw ~bidir epoch ~keep_build =
   in
   let tracking_map = tracking_maps switch atoms_or_locals in
   let env = create_env epoch sw in
-  let prefix = output_buildinfo_and_env ~skip_system sw bidir started tracking_map env in
+  let prefix, _relative =
+    output_buildinfo_and_env ~skip_system sw bidir started tracking_map env
+  in
   let build2nd = if keep_build then copy_build_dir prefix switch else sw in
   tracking_map, build2nd, started, packages
 
@@ -650,12 +653,14 @@ let build global_options build_options diffoscope keep_build twice compiler_pin 
   install switch atoms_or_locals;
   let tracking_map = tracking_maps switch atoms_or_locals in
   let env = create_env epoch (OpamSwitch.to_string switch) in
-  let prefix = output_buildinfo_and_env ~skip_system sw bidir started tracking_map env in
+  let prefix, relative =
+    output_buildinfo_and_env ~skip_system sw bidir started tracking_map env
+  in
   (* switch export - make a full one *)
   export switch prefix;
   let latest = bidir ^ "/latest" in
   if Sys.file_exists latest then Sys.remove latest;
-  Unix.symlink ~to_dir:true prefix latest;
+  Unix.symlink ~to_dir:true relative latest;
   let build1st =
     if keep_build
     then Some (copy_build_dir prefix switch)
