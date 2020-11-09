@@ -549,7 +549,7 @@ let strip_path () =
   let current_path = try Some (Unix.getenv "PATH") with Not_found -> None in
   let stripped_path =
     let allowed =
-      S.of_list [ "/bin" ; "/usr/bin" ; "/usr/local/bin" ; "/opt/bin" ]
+      S.of_list [ "/bin" ; "/usr/bin" ; "/usr/sbin" ; "/usr/local/bin" ; "/opt/bin" ]
     in
     let whitelisted x = S.mem x allowed in
     let our_path = match current_path with
