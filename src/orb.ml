@@ -619,7 +619,7 @@ let drop_slash s =
 
 (* Main function *)
 let build global_options build_options diffoscope keep_build twice compiler_pin compiler
-    repos out_dir switch_name epoch skip_system atoms_or_locals =
+    repos out_dir switch_name epoch skip_system solver_timeout atoms_or_locals =
   let started = Unix.time () in
   if atoms_or_locals = [] then
     exit_error `Bad_arguments
@@ -643,6 +643,9 @@ let build global_options build_options diffoscope keep_build twice compiler_pin 
   let pre = sw ^ "/_opam" in
   Unix.putenv "PREFIX" pre;
   Unix.putenv "PKG_CONFIG_PATH" (pre ^ "/lib/pkgconfig");
+  (match solver_timeout with
+   | None -> ()
+   | Some x -> Unix.putenv "OPAMSOLVERTIMEOUT" x);
   common_start global_options build_options diffoscope;
   (match compiler_pin, compiler with
    | None, None -> OpamStateConfig.update ~unlock_base:true ();
@@ -757,10 +760,15 @@ let build_cmd =
       "Use date as source date epoch (seconds since Unix epoch, defaults to Unix.time)."
       Arg.(some string) None
   in
+  let solver_timeout =
+    mk_opt [ "solver-timeout" ] "[seconds]"
+      "use the provided solver timeout instead of the default (sets OPAMSOLVERTIMEOUT)"
+      Arg.(some string) None
+  in
   Term.((const build $ global_options $ build_options
          $ diffoscope $ keep_build $ twice $ compiler_pin $ compiler
          $ repos $ out_dir $ switch_name $ source_date_epoch $ skip_system
-         $ atom_or_local_list)),
+         $ solver_timeout $ atom_or_local_list)),
   Term.info "build" ~man ~doc
 
 let rebuild_cmd =
