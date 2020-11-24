@@ -328,7 +328,7 @@ let restore_system_packages filename =
   | None ->
     log "unsupported OS (no system packages), no family"
 
-let output_buildinfo_and_env ~skip_system sw_prefix dir now map env =
+let output_buildinfo_and_env ~skip_system sw_prefix dir map env =
   let maps =
     OpamPackage.Map.fold (fun pkg map acc ->
         let value = OpamFile.Changes.write_to_string map in
@@ -336,13 +336,6 @@ let output_buildinfo_and_env ~skip_system sw_prefix dir now map env =
         (fn, value) :: acc)
       map []
   in
-  let hash =
-    let v = List.map (fun (n, v) -> n ^ ":" ^ v) maps in
-    Digest.to_hex (Digest.string (String.concat "\n" v))
-  in
-  (* output to <dir>/<hash>/<timestamp>/ *)
-  let reldir = Filename.concat hash (ts now) in
-  let dir = Filename.concat dir reldir in
   let prefix = OpamFilename.Dir.of_string dir in
   (* copy artifacts *)
   OpamPackage.Map.iter (fun _ map ->
@@ -372,8 +365,7 @@ let output_buildinfo_and_env ~skip_system sw_prefix dir now map env =
     dump_system_packages (OpamFilename.to_string pkgs)
   end;
   let fn = filename dot_env in
-  write_file fn (env_to_string env);
-  dir, reldir
+  write_file fn (env_to_string env)
 
 let install_system_packages dir =
   let filename = Printf.sprintf "%s/%s" dir dot_packages in
@@ -571,10 +563,10 @@ let strip_env ?(preserve = []) () =
       if List.mem key preserve then () else unsetenv key)
     (Unix.environment ())
 
-let rebuild ~skip_system ~sw ~bidir epoch ~keep_build =
+let rebuild ~skip_system ~sw ~bidir epoch ~keep_build out =
   let started = Unix.time () in
   let switch = OpamSwitch.of_string sw in
-  let switch_in = switch_filename (bidir ^ "/latest") in
+  let switch_in = switch_filename bidir in
   let packages = import_switch switch (Some switch_in) in
   let atoms_or_locals =
     List.map (fun a -> `Atom (a.OpamPackage.name, None))
@@ -582,10 +574,8 @@ let rebuild ~skip_system ~sw ~bidir epoch ~keep_build =
   in
   let tracking_map = tracking_maps switch atoms_or_locals in
   let env = create_env epoch sw in
-  let prefix, _relative =
-    output_buildinfo_and_env ~skip_system sw bidir started tracking_map env
-  in
-  let build2nd = if keep_build then copy_build_dir prefix switch else sw in
+  output_buildinfo_and_env ~skip_system sw out tracking_map env;
+  let build2nd = if keep_build then copy_build_dir out switch else sw in
   tracking_map, build2nd, started, packages
 
 let add_repo s (name, url) =
@@ -642,7 +632,6 @@ let build global_options build_options diffoscope keep_build twice compiler_pin 
     | Some x -> drop_slash x
   in
   let bidir = match out_dir with None -> tmp_dir | Some dir -> drop_slash dir in
-  let bidir = bidir ^ "/" ^ name in
   let sw = tmp_dir ^ "/build" in
   let switch = OpamSwitch.of_string sw in
   let pre = sw ^ "/_opam" in
@@ -661,31 +650,35 @@ let build global_options build_options diffoscope keep_build twice compiler_pin 
   install switch atoms_or_locals;
   let tracking_map = tracking_maps switch atoms_or_locals in
   let env = create_env epoch (OpamSwitch.to_string switch) in
-  let prefix, relative =
-    output_buildinfo_and_env ~skip_system sw bidir started tracking_map env
-  in
+  output_buildinfo_and_env ~skip_system sw bidir tracking_map env;
   (* switch export - make a full one *)
-  export switch prefix;
-  let latest = bidir ^ "/latest" in
-  if Sys.file_exists latest then Sys.remove latest;
-  Unix.symlink ~to_dir:true relative latest;
+  export switch bidir;
   let build1st =
     if keep_build
-    then Some (copy_build_dir prefix switch)
+    then Some (copy_build_dir bidir switch)
     else None
   in
   cleanup ();
-  if twice then
+  if twice then begin
+    let outdir =
+      if Filename.is_relative bidir then
+        bidir ^ "../orb2"
+      else
+        bidir ^ "2"
+    in
+    print_endline ("second run, outdir is " ^ outdir);
     let tracking_map', build2nd, started', _ =
-      rebuild ~skip_system ~sw ~bidir epoch ~keep_build
+      rebuild ~skip_system ~sw ~bidir epoch ~keep_build outdir
     in
     let dir = Printf.sprintf "%s/%s-%s%s" bidir (ts started) (ts started') dot_diffoscope in
     compare_builds tracking_map tracking_map' dir build1st build2nd diffoscope
+  end
 
-let rebuild global_options build_options diffoscope keep_build skip_system dir =
+let rebuild global_options build_options diffoscope keep_build skip_system dir out_dir =
   if dir = "" then failwith "require build info directory" else begin
     strip_env ();
-    let old = drop_slash dir ^ "/latest" in
+    let out = match out_dir with None -> "." | Some dir -> drop_slash dir in
+    let old = drop_slash dir in
     let old_started, env = find_env old in
     if not skip_system then install_system_packages old;
     common_start global_options build_options diffoscope;
@@ -693,7 +686,7 @@ let rebuild global_options build_options diffoscope keep_build skip_system dir =
     let sw = List.assoc "SWITCH_PATH" env in
     let epoch = float_of_string (List.assoc "SOURCE_DATE_EPOCH" env) in
     let tracking_map_2nd, build2nd, started', packages =
-      rebuild ~skip_system ~sw ~bidir:dir epoch ~keep_build
+      rebuild ~skip_system ~sw ~bidir:dir epoch ~keep_build out
     in
     let tracking_map_1st = OpamPackage.Set.fold (fun pkg acc ->
         match read_tracking_map old (OpamPackage.Name.to_string pkg.OpamPackage.name) with
@@ -751,8 +744,7 @@ let build_cmd =
   in
   let out_dir =
     mk_opt [ "out" ] "[DIR]"
-      "Use [DIR] as build info prefix (defaults to a temporary directory), \
-       output will created in [DIR]/package/hash/timestamp"
+      "Use [DIR] as build info prefix (defaults to a temporary directory)."
       Arg.(some string) None
   in
   let switch_name =
@@ -794,8 +786,13 @@ let rebuild_cmd =
     let doc = "use build information in the provided directory" in
     Arg.(value & pos 0 string "" & info [] ~doc ~docv:"DIR")
   in
+  let out_dir =
+    mk_opt [ "out" ] "[DIR]"
+      "Use [DIR] as build info prefix (defaults to a temporary directory)."
+      Arg.(some string) None
+  in
   Term.((const rebuild $ global_options $ build_options $ diffoscope
-         $ keep_build $ skip_system $ build_info)),
+         $ keep_build $ skip_system $ build_info $ out_dir)),
   Term.info "rebuild" ~man ~doc
 
 let help man_format cmds = function
