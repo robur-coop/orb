@@ -199,9 +199,12 @@ let install switch atoms_or_locals =
     log "Installed %s" (OpamFormula.string_of_atoms atoms);
     drop_states ~gt ~rt ~st ()
   with
-    e ->
+  | OpamStd.Sys.Exit n ->
+    log "Installation failed with %d" n;
+    exit n
+  | e ->
     log "Exception while installing: %s" (Printexc.to_string e);
-    raise e
+    exit 1
 
 let tracking_maps switch atoms_or_locals =
   OpamGlobalState.with_ `Lock_none @@ fun gt ->
