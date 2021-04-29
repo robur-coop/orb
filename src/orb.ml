@@ -707,6 +707,11 @@ let rebuild global_options build_options diffoscope keep_build skip_system dir o
 open Cmdliner
 open OpamArg
 
+let validity = cli_from cli2_1
+
+let mk_flag a b = mk_flag ~cli:cli2_1 validity a b
+let mk_opt a b c d e = mk_opt ~cli:cli2_1 validity a b c d e
+
 let diffoscope = mk_flag ["diffoscope"] "use diffoscope to generate a report"
 
 let keep_build =
@@ -765,7 +770,7 @@ let build_cmd =
       "use the provided solver timeout instead of the default (sets OPAMSOLVERTIMEOUT)"
       Arg.(some string) None
   in
-  Term.((const build $ global_options $ build_options
+  Term.((const build $ global_options cli2_1 $ build_options cli2_1
          $ diffoscope $ keep_build $ twice $ compiler_pin $ compiler
          $ repos $ out_dir $ switch_name $ source_date_epoch $ skip_system
          $ solver_timeout $ atom_or_local_list)),
@@ -794,7 +799,7 @@ let rebuild_cmd =
       "Use [DIR] as build info prefix (defaults to a temporary directory)."
       Arg.(some string) None
   in
-  Term.((const rebuild $ global_options $ build_options $ diffoscope
+  Term.((const rebuild $ global_options cli2_1 $ build_options cli2_1 $ diffoscope
          $ keep_build $ skip_system $ build_info $ out_dir)),
   Term.info "rebuild" ~man ~doc
 
