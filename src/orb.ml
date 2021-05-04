@@ -309,6 +309,9 @@ let dump_system_packages filename =
       | None ->
         log "unsupported OS (no system packages), bsd without distribution"
     end
+  | Some "debian" ->
+    let r = Sys.command ("dpkg-query --showformat='${Package}=${Version}\n' -W > " ^ filename) in
+    if r <> 0 then log "failed to dump system packages (exit %d)" r
   | Some family ->
     log "unsupported OS for host system packages %s" family
   | None ->
@@ -326,6 +329,9 @@ let restore_system_packages filename =
       | None ->
         log "unsupported OS (no system packages), bsd without distribution"
     end
+  | Some "debian" ->
+    let r = Sys.command ("cat " ^ filename ^ " | xargs apt-get install -y") in
+    if r <> 0 then log "couldn't install packages"
   | Some family ->
     log "unsupported OS for host system packages %s" family
   | None ->
@@ -459,7 +465,7 @@ let common_start global_options build_options diffoscope =
   let config_f = OpamPath.config root in
   let already_init = OpamFile.exists config_f in
   if not already_init then begin (* could also be assert *)
-    let init_config = OpamInitDefaults.init_config () in
+    let init_config = OpamInitDefaults.init_config ~sandboxing:false () in
     let repo_url = "/tmp/nonexisting" in
     write_file
       OpamFilename.(create (Dir.of_string repo_url) (Base.of_string "repo"))
