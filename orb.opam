@@ -7,6 +7,7 @@ authors: "Raja Boujbel <rjbou@ocamlpro.com>"
 homepage: "https://github.com/rjbou/orb"
 bug-reports: "https://github.com/rjbou/orb/issues"
 depends: [
+  "ocaml" {>= "4.05.0"}
   "dune" {>= "2.0"}
   "cmdliner" {>= "1.0"}
   "opam-client" {>= "2.1.0~beta4"}
