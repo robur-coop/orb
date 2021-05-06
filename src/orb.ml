@@ -454,7 +454,7 @@ let generate_diffs root1 root2 final_map dir =
            let _, _, cmd = List.nth full i in
            OpamProcess.string_of_command cmd) can)
 
-let common_start global_options build_options diffoscope =
+let common_start global_options disable_sandboxing build_options diffoscope =
   if diffoscope && OpamSystem.resolve_command "diffoscope" = None then
     exit_error `Not_found "diffoscope not found";
   (* all environment variables need to be set/unset before the following line,
@@ -465,7 +465,7 @@ let common_start global_options build_options diffoscope =
   let config_f = OpamPath.config root in
   let already_init = OpamFile.exists config_f in
   if not already_init then begin (* could also be assert *)
-    let init_config = OpamInitDefaults.init_config ~sandboxing:false () in
+    let init_config = OpamInitDefaults.init_config ~sandboxing:(not disable_sandboxing) () in
     let repo_url = "/tmp/nonexisting" in
     write_file
       OpamFilename.(create (Dir.of_string repo_url) (Base.of_string "repo"))
@@ -622,7 +622,7 @@ let drop_slash s =
     s
 
 (* Main function *)
-let build global_options build_options diffoscope keep_build twice compiler_pin compiler
+let build global_options disable_sandboxing build_options diffoscope keep_build twice compiler_pin compiler
     repos out_dir switch_name epoch skip_system solver_timeout atoms_or_locals =
   let started = Unix.time () in
   if atoms_or_locals = [] then
@@ -649,7 +649,7 @@ let build global_options build_options diffoscope keep_build twice compiler_pin 
   (match solver_timeout with
    | None -> ()
    | Some x -> Unix.putenv "OPAMSOLVERTIMEOUT" x);
-  common_start global_options build_options diffoscope;
+  common_start global_options disable_sandboxing build_options diffoscope;
   (match compiler_pin, compiler with
    | None, None -> OpamStateConfig.update ~unlock_base:true ();
    | _ -> ());
@@ -683,14 +683,14 @@ let build global_options build_options diffoscope keep_build twice compiler_pin 
     compare_builds tracking_map tracking_map' dir build1st build2nd diffoscope
   end
 
-let rebuild global_options build_options diffoscope keep_build skip_system dir out_dir =
+let rebuild global_options disable_sandboxing build_options diffoscope keep_build skip_system dir out_dir =
   if dir = "" then failwith "require build info directory" else begin
     strip_env ();
     let out = match out_dir with None -> "." | Some dir -> drop_slash dir in
     let old = drop_slash dir in
     let old_started, env = find_env old in
     if not skip_system then install_system_packages old;
-    common_start global_options build_options diffoscope;
+    common_start global_options disable_sandboxing build_options diffoscope;
     OpamStateConfig.update ~unlock_base:true ();
     let sw = List.assoc "SWITCH_PATH" env in
     let epoch = float_of_string (List.assoc "SOURCE_DATE_EPOCH" env) in
@@ -776,7 +776,13 @@ let build_cmd =
       "use the provided solver timeout instead of the default (sets OPAMSOLVERTIMEOUT)"
       Arg.(some string) None
   in
-  Term.((const build $ global_options cli2_1 $ build_options cli2_1
+  let disable_sandboxing =
+    mk_flag ["disable-sandboxing"]
+      "Use a default configuration with sandboxing disabled. Use this at your \
+      own risk, without sandboxing it is possible for a broken package script \
+      to delete all your files."
+  in
+  Term.((const build $ global_options cli2_1 $ disable_sandboxing $ build_options cli2_1
          $ diffoscope $ keep_build $ twice $ compiler_pin $ compiler
          $ repos $ out_dir $ switch_name $ source_date_epoch $ skip_system
          $ solver_timeout $ atom_or_local_list)),
@@ -805,7 +811,13 @@ let rebuild_cmd =
       "Use [DIR] as build info prefix (defaults to a temporary directory)."
       Arg.(some string) None
   in
-  Term.((const rebuild $ global_options cli2_1 $ build_options cli2_1 $ diffoscope
+  let disable_sandboxing =
+    mk_flag ["disable-sandboxing"]
+      "Use a default configuration with sandboxing disabled. Use this at your \
+      own risk, without sandboxing it is possible for a broken package script \
+      to delete all your files."
+  in
+  Term.((const rebuild $ global_options cli2_1 $ disable_sandboxing $ build_options cli2_1 $ diffoscope
          $ keep_build $ skip_system $ build_info $ out_dir)),
   Term.info "rebuild" ~man ~doc
 
