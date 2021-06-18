@@ -10,6 +10,8 @@
 
 open OpamStateTypes
 
+let cli = OpamArg.cli2_1, `Default
+
 (** Utils *)
 let log fmt =
   let orb = OpamConsole.(colorise `bold "[ORB]" |> colorise `cyan) in
@@ -459,7 +461,7 @@ let common_start global_options disable_sandboxing build_options diffoscope =
     exit_error `Not_found "diffoscope not found";
   (* all environment variables need to be set/unset before the following line,
      which forces the lazy Unix.environment in OpamStd *)
-  OpamArg.apply_global_options global_options;
+  OpamArg.apply_global_options cli global_options;
   OpamArg.apply_build_options build_options;
   let root = OpamStateConfig.(!r.root_dir) in
   let config_f = OpamPath.config root in
@@ -481,7 +483,7 @@ let common_start global_options disable_sandboxing build_options diffoscope =
     in
     drop_states ~gt ~rt ();
   end;
-  OpamCoreConfig.update ~precise_tracking:true ~answer:(Some true) ();
+  OpamCoreConfig.update ~precise_tracking:true ~yes:(Some true) ~confirm_level:`all_yes ();
   OpamStd.Sys.at_exit cleanup
 
 let compare_builds tracking_map tracking_map' dir build1st build2nd diffoscope =
@@ -715,8 +717,8 @@ open OpamArg
 
 let validity = cli_from cli2_1
 
-let mk_flag a b = mk_flag ~cli:cli2_1 validity a b
-let mk_opt a b c d e = mk_opt ~cli:cli2_1 validity a b c d e
+let mk_flag a b = mk_flag ~cli validity a b
+let mk_opt a b c d e = mk_opt ~cli validity a b c d e
 
 let diffoscope = mk_flag ["diffoscope"] "use diffoscope to generate a report"
 
@@ -782,7 +784,7 @@ let build_cmd =
       own risk, without sandboxing it is possible for a broken package script \
       to delete all your files."
   in
-  Term.((const build $ global_options cli2_1 $ disable_sandboxing $ build_options cli2_1
+  Term.((const build $ global_options cli $ disable_sandboxing $ build_options cli
          $ diffoscope $ keep_build $ twice $ compiler_pin $ compiler
          $ repos $ out_dir $ switch_name $ source_date_epoch $ skip_system
          $ solver_timeout $ atom_or_local_list)),
@@ -817,7 +819,7 @@ let rebuild_cmd =
       own risk, without sandboxing it is possible for a broken package script \
       to delete all your files."
   in
-  Term.((const rebuild $ global_options cli2_1 $ disable_sandboxing $ build_options cli2_1 $ diffoscope
+  Term.((const rebuild $ global_options cli $ disable_sandboxing $ build_options cli $ diffoscope
          $ keep_build $ skip_system $ build_info $ out_dir)),
   Term.info "rebuild" ~man ~doc
 
