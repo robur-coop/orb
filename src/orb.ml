@@ -101,12 +101,13 @@ let custom_env () = [
   "OS_FAMILY", OpamSysPoll.os_family ();
 ]
 
-let create_env epoch dir =
+let create_env epoch dir package =
   [
     "HOME", Unix.getenv "HOME" ;
     "PATH", Unix.getenv "PATH" ;
     "SWITCH_PATH", dir;
     "SOURCE_DATE_EPOCH", convert_date epoch;
+    "ORB_BUILDING_PACKAGE", package;
   ] @
   List.fold_left
     (fun acc (k, v) -> match v with None -> acc | Some v -> (k,v)::acc)
@@ -521,6 +522,9 @@ let set_env_from_file env =
   Unix.putenv "HOME" home;
   let path = List.assoc "PATH" env in
   Unix.putenv "PATH" path;
+  (match List.assoc_opt "ORB_BUILDING_PACKAGE" env with
+   | None -> log "no ORB_BUILDING_PACKAGE defined"
+   | Some b -> Unix.putenv "ORB_BUILDING_PACKAGE" b);
   let sw = List.assoc "SWITCH_PATH" env in
   let prefix = sw ^ "/_opam" in
   Unix.putenv "PREFIX" prefix;
@@ -584,7 +588,8 @@ let rebuild ~skip_system ~sw ~bidir epoch ~keep_build out =
       (OpamPackage.Set.elements packages)
   in
   let tracking_map = tracking_maps switch atoms_or_locals in
-  let env = create_env epoch sw in
+  let pkg = project_name_from_arg atoms_or_locals in
+  let env = create_env epoch sw pkg in
   output_buildinfo_and_env ~skip_system sw out tracking_map env;
   let build2nd = if keep_build then copy_build_dir out switch else sw in
   tracking_map, build2nd, started, packages
@@ -642,6 +647,7 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
     | None -> OpamSystem.mk_temp_dir ~prefix:("bi-" ^ name) ()
     | Some x -> drop_slash x
   in
+  Unix.putenv "ORB_BUILDING_PACKAGE" name;
   let bidir = match out_dir with None -> tmp_dir | Some dir -> drop_slash dir in
   let sw = tmp_dir ^ "/build" in
   let switch = OpamSwitch.of_string sw in
@@ -660,7 +666,7 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
   install_switch ~repos compiler_pin compiler switch;
   install switch atoms_or_locals;
   let tracking_map = tracking_maps switch atoms_or_locals in
-  let env = create_env epoch (OpamSwitch.to_string switch) in
+  let env = create_env epoch (OpamSwitch.to_string switch) name in
   output_buildinfo_and_env ~skip_system sw bidir tracking_map env;
   (* switch export - make a full one *)
   export switch bidir;
