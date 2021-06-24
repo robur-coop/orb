@@ -19,6 +19,6 @@ depends: [
 build: [
   ["dune" "subst"] {dev}
   ["dune" "build" "-p" name "-j" jobs]
-  ["sh" "packaging/FreeBSD/create-package.sh"] {os = "freebsd"}
+  ["sh" "packaging/FreeBSD/create_package.sh"] {os = "freebsd"}
 ]
 dev-repo: "git+https://github.com/roburio/orb.git"
