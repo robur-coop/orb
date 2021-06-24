@@ -1,0 +1,16 @@
+name:         orb
+version:      %%VERSION_NUM%%
+origin:	      local/orb
+comment:      Opam reproducible builder
+www:	      https://github.com/roburio/orb
+maintainer:   Robur <team@robur.coop>
+prefix:	      /usr/local
+licenselogic: single
+licenses:     [LGPL21]
+flatsize:     %%FLATSIZE%%
+categories:   [local]
+
+desc = <<EOD
+A utility for building and testing reproducibility of opam packages
+
+EOD;
