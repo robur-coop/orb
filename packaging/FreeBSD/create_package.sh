@@ -3,7 +3,7 @@
 # only execute anything if either
 # - running under orb with package = orb
 # - not running under opam at all
-if [ "$ORB_BUILDING_PACKAGE" != "orb" -a "$OPAMVAR_PACKAGE_NAME" != "" ]; then
+if [ "$ORB_BUILDING_PACKAGE" != "orb" -a "$OPAM_PACKAGE_NAME" != "" ]; then
     exit 0;
 fi
 
