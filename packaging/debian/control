@@ -1,0 +1,12 @@
+Package: orb
+Version: 0.0.1-%%VERSION_NUM%%
+Section: unknown
+Priority: optional
+Maintainer: Robur Team <team@robur.coop>
+Standards-Version: 4.4.1
+Homepage: https://github.com/roburio/orb
+Vcs-Browser: https://github.com/roburio/orb
+Vcs-Git: https://github.com/roburio/orb.git
+Architecture: all
+Description: Reproducible builder for opam packages
+  ORB can build and rebuild opam packages

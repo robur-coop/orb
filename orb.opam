@@ -20,5 +20,6 @@ build: [
   ["dune" "subst"] {dev}
   ["dune" "build" "-p" name "-j" jobs]
   ["sh" "packaging/FreeBSD/create_package.sh"] {os = "freebsd"}
+  ["sh" "packaging/debian/create_package.sh"] {os-family = "debian"}
 ]
 dev-repo: "git+https://github.com/roburio/orb.git"
