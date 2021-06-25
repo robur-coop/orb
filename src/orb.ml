@@ -484,7 +484,7 @@ let common_start global_options disable_sandboxing build_options diffoscope =
     in
     drop_states ~gt ~rt ();
   end;
-  OpamCoreConfig.update ~precise_tracking:true ~yes:(Some true) ~confirm_level:`all_yes ();
+  OpamCoreConfig.update ~precise_tracking:true ~yes:(Some true) ~confirm_level:`unsafe_yes ();
   OpamStd.Sys.at_exit cleanup
 
 let compare_builds tracking_map tracking_map' dir build1st build2nd diffoscope =
