@@ -9,6 +9,13 @@ licenselogic: single
 licenses:     [LGPL21]
 flatsize:     %%FLATSIZE%%
 categories:   [local]
+deps {
+  gmake { origin = "devel/gmake" ; },
+  ca_root_nss { origin = "security/ca_root_nss" ; },
+  bash { origin = "shells/bash" ; },
+  git { origin = "devel/git" ; },
+  patch { origin = "devel/patch" ; }
+}
 
 desc = <<EOD
 A utility for building and testing reproducibility of opam packages
