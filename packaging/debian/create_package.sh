@@ -29,3 +29,4 @@ install $basedir/packaging/debian/copyright $debiandir/copyright
 
 dpkg-deb --build $rootdir $basedir/orb.deb
 echo 'bin: [ "orb.deb" ]' > $basedir/orb.install
+echo 'doc: [ "README.md" ]' >> $basedir/orb.install

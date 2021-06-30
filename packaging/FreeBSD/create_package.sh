@@ -43,3 +43,4 @@ export SOURCE_DATE_EPOCH=$(git log -1 --pretty=format:%ct)
 pkg create -r "$rootdir" -M "$manifest" -o $basedir/
 mv $basedir/orb-*.txz $basedir/orb.txz
 echo 'bin: [ "orb.txz" ]' > $basedir/orb.install
+echo 'doc: [ "README.md" ]' >> $basedir/orb.install
