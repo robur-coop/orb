@@ -46,6 +46,8 @@ echo "MANIFEST"
 cat $manifest
 echo "MANIFEST END"
 pkg create -r "$rootdir" -M "$manifest" -o $basedir/
+echo "result:"
+ls -lR $basedir
 mv $basedir/orb-*.txz $basedir/orb.txz
 echo 'bin: [ "orb.txz" ]' > $basedir/orb.install
 echo 'doc: [ "README.md" ]' >> $basedir/orb.install
