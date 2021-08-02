@@ -1,4 +1,4 @@
-#!/bin/sh -e
+#!/bin/sh -ex
 
 # only execute anything if either
 # - running under orb with package = orb

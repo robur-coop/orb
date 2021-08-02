@@ -108,7 +108,6 @@ let create_env epoch dir package =
     "SWITCH_PATH", dir;
     "SOURCE_DATE_EPOCH", convert_date epoch;
     "ORB_BUILDING_PACKAGE", package;
-    "DEBIAN_FRONTEND", "noninteractive";
   ] @
   List.fold_left
     (fun acc (k, v) -> match v with None -> acc | Some v -> (k,v)::acc)
@@ -526,9 +525,6 @@ let set_env_from_file env =
   (match List.assoc_opt "ORB_BUILDING_PACKAGE" env with
    | None -> log "no ORB_BUILDING_PACKAGE defined"
    | Some b -> Unix.putenv "ORB_BUILDING_PACKAGE" b);
-  (match List.assoc_opt "DEBIAN_FRONTEND" env with
-   | None -> ()
-   | Some b -> Unix.putenv "DEBIAN_FRONTEND" b);
   let sw = List.assoc "SWITCH_PATH" env in
   let prefix = sw ^ "/_opam" in
   Unix.putenv "PREFIX" prefix;
@@ -651,7 +647,6 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
     | None -> OpamSystem.mk_temp_dir ~prefix:("bi-" ^ name) ()
     | Some x -> drop_slash x
   in
-  Unix.putenv "DEBIAN_FRONTEND" "noninteractive";
   Unix.putenv "ORB_BUILDING_PACKAGE" name;
   let bidir = match out_dir with None -> tmp_dir | Some dir -> drop_slash dir in
   let sw = tmp_dir ^ "/build" in
