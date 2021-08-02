@@ -40,14 +40,7 @@ sed -e "s:%%FLATSIZE%%:${flatsize}:" "$pdir/MANIFEST" > "$manifest"
 } | sed -e "s:${rootdir}::" >> "$manifest"
 
 export SOURCE_DATE_EPOCH=$(git log -1 --pretty=format:%ct)
-echo "ROOTDIR contents"
-ls -lR $rootdir
-echo "MANIFEST"
-cat $manifest
-echo "MANIFEST END"
 pkg create -r "$rootdir" -M "$manifest" -o $basedir/
-echo "result:"
-ls -lR $basedir
-mv $basedir/orb-*.txz $basedir/orb.txz
-echo 'bin: [ "orb.txz" ]' > $basedir/orb.install
+mv $basedir/orb-*.pkg $basedir/orb.pkg
+echo 'bin: [ "orb.pkg" ]' > $basedir/orb.install
 echo 'doc: [ "README.md" ]' >> $basedir/orb.install
