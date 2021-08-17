@@ -861,6 +861,7 @@ let cmds = [ build_cmd ; rebuild_cmd ]
 let () =
   let buff = Buffer.create 1024 in
   let fmt = Format.formatter_of_buffer buff in
+  OpamSystem.init ();
   match Term.eval_choice default_cmd cmds ~err:fmt ~catch:true with
   | `Error (`Term | `Parse) ->
     Format.pp_print_flush fmt ();
