@@ -23,9 +23,9 @@ install $bdir/orb $bindir/orb
 install $basedir/opam.sh $bindir/opam
 
 # install debian metadata
-install $basedir/packaging/debian/control $debiandir/control
-install $basedir/packaging/debian/changelog $debiandir/changelog
-install $basedir/packaging/debian/copyright $debiandir/copyright
+install -m 0644 $basedir/packaging/debian/control $debiandir/control
+install -m 0644 $basedir/packaging/debian/changelog $debiandir/changelog
+install -m 0644 $basedir/packaging/debian/copyright $debiandir/copyright
 
 dpkg-deb --build $rootdir $basedir/orb.deb
 echo 'bin: [ "orb.deb" ]' > $basedir/orb.install
