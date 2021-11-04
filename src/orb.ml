@@ -94,27 +94,24 @@ let switch_filename dir =
 
 let convert_date x = string_of_int (int_of_float x)
 
-let custom_env () = [
+let custom_env_keys = [ "OS" ; "OS_DISTRIBUTION" ; "OS_VERSION" ; "OS_FAMILY" ; "SWITCH_PATH" ]
+
+let custom_env s = [
   "OS", OpamSysPoll.os ();
   "OS_DISTRIBUTION", OpamSysPoll.os_distribution ();
   "OS_VERSION", OpamSysPoll.os_version ();
   "OS_FAMILY", OpamSysPoll.os_family ();
+  "SWITCH_PATH", s
 ]
 
-let create_env epoch dir package =
-  [
-    "HOME", Unix.getenv "HOME" ;
-    "PATH", Unix.getenv "PATH" ;
-    "SWITCH_PATH", dir;
-    "SOURCE_DATE_EPOCH", convert_date epoch;
-    "ORB_BUILDING_PACKAGE", package;
-  ] @
+let create_env (s : string) =
+  Array.to_list (Unix.environment () ) @
   List.fold_left
-    (fun acc (k, v) -> match v with None -> acc | Some v -> (k,v)::acc)
-    [] (custom_env ())
+    (fun acc (k, v) -> match v with None -> acc | Some v -> (k^"="^v)::acc)
+    [] (custom_env (Some s))
 
 let env_to_string env =
-  String.concat "\n" (List.map (fun (k, v) -> k ^ "=" ^ v) env)
+  String.concat "\n" env
 
 let env_of_string str =
   let lines = String.split_on_char '\n' str in
@@ -133,7 +130,7 @@ let env_matches env =
     | _, None -> log "key %s not found in environment" key ; true
     | Some v, Some v' -> String.equal v v'
   in
-  List.for_all (fun (k, v) -> opt_compare k v) (custom_env ())
+  List.for_all (fun (k, v) -> opt_compare k v) (custom_env None)
 
 (** Steps *)
 let import_switch switch export =
@@ -515,26 +512,10 @@ let project_name_from_dir dir = (* the first <name>.opam-switch *)
   | None -> failwith "couldn't find switch"
   | Some t -> OpamFilename.(Base.to_string (basename (chop_extension t)))
 
-let set_env_from_file env =
-  let epoch = List.assoc "SOURCE_DATE_EPOCH" env in
-  Unix.putenv "SOURCE_DATE_EPOCH" epoch;
-  let home = List.assoc "HOME" env in
-  Unix.putenv "HOME" home;
-  let path = List.assoc "PATH" env in
-  Unix.putenv "PATH" path;
-  (match List.assoc_opt "ORB_BUILDING_PACKAGE" env with
-   | None -> log "no ORB_BUILDING_PACKAGE defined"
-   | Some b -> Unix.putenv "ORB_BUILDING_PACKAGE" b);
-  let sw = List.assoc "SWITCH_PATH" env in
-  let prefix = sw ^ "/_opam" in
-  Unix.putenv "PREFIX" prefix;
-  Unix.putenv "PKG_CONFIG_PATH" (prefix ^ "/lib/pkgconfig")
-
 let find_env dir =
   let env_file = Filename.concat dir dot_env in
   let env = env_of_string (read_file (OpamFilename.of_string env_file)) in
   (* need to set HOME and PATH and SOURCE_DATE_EPOCH, since this env is captured by opam *)
-  set_env_from_file env;
   (if env_matches env then
      log "environment matches, using it"
    else
@@ -566,7 +547,7 @@ let strip_path () =
     in
     String.concat ":" (S.elements our_path)
   in
-  Unix.putenv "PATH" stripped_path
+  stripped_path
 
 let strip_env ?(preserve = []) () =
   Array.iter (fun k ->
@@ -578,7 +559,7 @@ let strip_env ?(preserve = []) () =
       if List.mem key preserve then () else unsetenv key)
     (Unix.environment ())
 
-let rebuild ~skip_system ~sw ~bidir epoch ~keep_build out =
+let rebuild ~skip_system ~sw ~bidir ~keep_build out =
   let started = Unix.time () in
   let switch = OpamSwitch.of_string sw in
   let switch_in = switch_filename bidir in
@@ -588,8 +569,7 @@ let rebuild ~skip_system ~sw ~bidir epoch ~keep_build out =
       (OpamPackage.Set.elements packages)
   in
   let tracking_map = tracking_maps switch atoms_or_locals in
-  let pkg = project_name_from_arg atoms_or_locals in
-  let env = create_env epoch sw pkg in
+  let env = create_env sw in
   output_buildinfo_and_env ~skip_system sw out tracking_map env;
   let build2nd = if keep_build then copy_build_dir out switch else sw in
   tracking_map, build2nd, started, packages
@@ -636,27 +616,25 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
     exit_error `Bad_arguments
       "I can't check reproductibility of nothing, by definition, it is";
   strip_env ~preserve:["HOME";"PATH"] ();
-  strip_path ();
-  let epoch = match epoch with
-    | Some x -> float_of_string x
-    | None -> Unix.time ()
-  in
-  Unix.putenv "SOURCE_DATE_EPOCH" (convert_date epoch);
+  Unix.putenv "PATH" (strip_path ());
+  Unix.putenv "SOURCE_DATE_EPOCH" 
+    (convert_date (match epoch with
+      | Some x -> float_of_string x
+      | None -> Unix.time ()));
+  (match solver_timeout with None -> () | Some x -> Unix.putenv "OPAMSOLVERTIMEOUT" x);
+  Unix.putenv "OPAMERRLOGLEN" "0";
   let name = project_name_from_arg atoms_or_locals in
+  Unix.putenv "ORB_BUILDING_PACKAGE" name;
   let tmp_dir = match switch_name with
     | None -> OpamSystem.mk_temp_dir ~prefix:("bi-" ^ name) ()
     | Some x -> drop_slash x
   in
-  Unix.putenv "ORB_BUILDING_PACKAGE" name;
   let bidir = match out_dir with None -> tmp_dir | Some dir -> drop_slash dir in
   let sw = tmp_dir ^ "/build" in
   let switch = OpamSwitch.of_string sw in
-  let pre = sw ^ "/_opam" in
-  Unix.putenv "PREFIX" pre;
-  Unix.putenv "PKG_CONFIG_PATH" (pre ^ "/lib/pkgconfig");
-  (match solver_timeout with
-   | None -> ()
-   | Some x -> Unix.putenv "OPAMSOLVERTIMEOUT" x);
+  let prefix = sw ^ "/_opam" in
+  Unix.putenv "PREFIX" prefix;
+  Unix.putenv "PKG_CONFIG_PATH" (prefix ^ "/lib/pkgconfig");
   common_start global_options disable_sandboxing build_options diffoscope;
   (match compiler_pin, compiler with
    | None, None -> OpamStateConfig.update ~unlock_base:true ();
@@ -666,7 +644,7 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
   install_switch ~repos compiler_pin compiler switch;
   install switch atoms_or_locals;
   let tracking_map = tracking_maps switch atoms_or_locals in
-  let env = create_env epoch (OpamSwitch.to_string switch) name in
+  let env = create_env sw in
   output_buildinfo_and_env ~skip_system sw bidir tracking_map env;
   (* switch export - make a full one *)
   export switch bidir;
@@ -685,7 +663,7 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
     in
     print_endline ("second run, outdir is " ^ outdir);
     let tracking_map', build2nd, started', _ =
-      rebuild ~skip_system ~sw ~bidir epoch ~keep_build outdir
+      rebuild ~skip_system ~sw ~bidir ~keep_build outdir
     in
     let dir = Printf.sprintf "%s/%s-%s%s" bidir (ts started) (ts started') dot_diffoscope in
     compare_builds tracking_map tracking_map' dir build1st build2nd diffoscope
@@ -697,13 +675,13 @@ let rebuild global_options disable_sandboxing build_options diffoscope keep_buil
     let out = match out_dir with None -> "." | Some dir -> drop_slash dir in
     let old = drop_slash dir in
     let old_started, env = find_env old in
+    List.iter (fun (k, v) -> if List.mem k custom_env_keys then () else Unix.putenv k v) env;
     if not skip_system then install_system_packages old;
     common_start global_options disable_sandboxing build_options diffoscope;
     OpamStateConfig.update ~unlock_base:true ();
     let sw = List.assoc "SWITCH_PATH" env in
-    let epoch = float_of_string (List.assoc "SOURCE_DATE_EPOCH" env) in
     let tracking_map_2nd, build2nd, started', packages =
-      rebuild ~skip_system ~sw ~bidir:dir epoch ~keep_build out
+      rebuild ~skip_system ~sw ~bidir:dir ~keep_build out
     in
     let tracking_map_1st = OpamPackage.Set.fold (fun pkg acc ->
         match read_tracking_map old (OpamPackage.Name.to_string pkg.OpamPackage.name) with
