@@ -680,6 +680,11 @@ let rebuild global_options disable_sandboxing build_options diffoscope keep_buil
     common_start global_options disable_sandboxing build_options diffoscope;
     OpamStateConfig.update ~unlock_base:true ();
     let sw = List.assoc "SWITCH_PATH" env in
+    (* for orb < 20211104 backwards compatibility *)
+    if List.assoc_opt "PREFIX" env = None then
+      Unix.putenv "PREFIX" (sw ^ "/_opam");
+    if List.assoc_opt "PKG_CONFIG_PATH" env = None then
+      Unix.putenv "PKG_CONFIG_PATH" (sw ^ "/_opam/lib/pkgconfig");
     let tracking_map_2nd, build2nd, started', packages =
       rebuild ~skip_system ~sw ~bidir:dir ~keep_build out
     in
