@@ -1,5 +1,5 @@
 Package: orb
-Version: 0.0.1-%%VERSION_NUM%%
+Version: 0.0.1-a16d89b
 Section: unknown
 Priority: optional
 Maintainer: Robur Team <team@robur.coop>

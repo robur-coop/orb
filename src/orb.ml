@@ -847,7 +847,7 @@ let default_cmd =
     `P "$(tname) builds opam packages, checking for reproducibility." ;
   ] in
   Term.(ret (const help $ Term.man_format $ Term.choice_names $ Term.pure None)),
-  Term.info "orb" ~version:"%%VERSION%%" ~doc ~man
+  Term.info "orb" ~version:"a16d89b" ~doc ~man
 
 let cmds = [ build_cmd ; rebuild_cmd ]
 

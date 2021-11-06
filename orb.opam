@@ -1,3 +1,4 @@
+version: "a16d89b"
 opam-version: "2.0"
 synopsis: "Check opam package reproducibility"
 maintainer: "Robur Team <team@robur.coop>"
