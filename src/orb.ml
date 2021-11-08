@@ -53,46 +53,12 @@ let write_file file value =
     OpamStd.Exn.finalise e @@ fun () ->
     close_out oc; OpamFilename.remove file
 
-let remove_switch switch =
-  OpamGlobalState.with_ `Lock_write @@ fun gt ->
-  OpamGlobalState.drop @@
-  OpamSwitchCommand.remove ~confirm:false gt switch;
-  log "Switch %s removed"
-    (OpamSwitch.to_string switch |> OpamConsole.colorise `blue)
-
-let clean_switch = ref None
-
-let cleanup () =
-  log "cleaning up";
-  match !clean_switch with
-  | None -> ()
-  | Some switch ->
-    remove_switch switch;
-    OpamFilename.rmdir
-      (OpamFilename.Dir.of_string (OpamSwitch.to_string switch));
-    clean_switch := None
-
-let exit_error reason fmt =
-  cleanup ();
-  OpamConsole.error_and_exit reason fmt
-
-let drop_states ?gt ?rt ?st () =
-  OpamStd.Option.iter OpamSwitchState.drop st;
-  OpamStd.Option.iter OpamRepositoryState.drop rt;
-  OpamStd.Option.iter OpamGlobalState.drop gt
-
 let dot_switch = "opam-switch"
 let dot_hash = ".build-hashes"
 let dot_env = "build-environment"
 let dot_packages = "system-packages"
 let dot_build = "build"
 let dot_diffoscope = ".diffoscope"
-
-let switch_filename dir =
-  let fn = Printf.sprintf "%s/%s" dir dot_switch in
-  OpamFile.make (OpamFilename.of_string fn)
-
-let convert_date x = string_of_int (int_of_float x)
 
 let custom_env_keys = [ "OS" ; "OS_DISTRIBUTION" ; "OS_VERSION" ; "OS_FAMILY" ; "SWITCH_PATH" ]
 
@@ -122,6 +88,102 @@ let env_of_string str =
       | _ -> Printf.printf "bad environment line %s\n" line ; acc)
     [] lines
 
+let dump_system_packages filename =
+  match OpamSysPoll.os_family () with
+  | Some "bsd" ->
+    begin match OpamSysPoll.os_distribution () with
+      | Some "freebsd" ->
+        let r = Sys.command ("/usr/sbin/pkg query %n-%v > " ^ filename) in
+        if r <> 0 then log "failed to dump system packages (exit %d)" r
+      | Some distrib ->
+        log "unsupported OS for host system packages (bsd %s)" distrib
+      | None ->
+        log "unsupported OS (no system packages), bsd without distribution"
+    end
+  | Some "debian" ->
+    let r = Sys.command ("dpkg-query --showformat='${Package}=${Version}\n' -W > " ^ filename) in
+    if r <> 0 then log "failed to dump system packages (exit %d)" r
+  | Some family ->
+    log "unsupported OS for host system packages %s" family
+  | None ->
+    log "unsupported OS (no system packages), no family"
+
+let restore_system_packages filename =
+  match OpamSysPoll.os_family () with
+  | Some "bsd" ->
+    begin match OpamSysPoll.os_distribution () with
+      | Some "freebsd" ->
+        let r = Sys.command ("cat " ^ filename ^ " | xargs /usr/sbin/pkg install -y") in
+        if r <> 0 then log "couldn't install packages"
+      | Some distrib ->
+        log "unsupported OS for host system packages (bsd %s)" distrib
+      | None ->
+        log "unsupported OS (no system packages), bsd without distribution"
+    end
+  | Some "debian" ->
+    let r = Sys.command ("cat " ^ filename ^ " | xargs apt-get install -y") in
+    if r <> 0 then log "couldn't install packages"
+  | Some family ->
+    log "unsupported OS for host system packages %s" family
+  | None ->
+    log "unsupported OS (no system packages), no family"
+
+let remove_switch switch =
+  OpamGlobalState.with_ `Lock_write @@ fun gt ->
+  OpamGlobalState.drop @@
+  OpamSwitchCommand.remove ~confirm:false gt switch;
+  log "Switch %s removed"
+    (OpamSwitch.to_string switch |> OpamConsole.colorise `blue)
+
+let output_system_packages_and_env ~skip_system dir env =
+  let prefix = OpamFilename.Dir.of_string dir in
+  (* output metadata: hashes, environment, system packages *)
+  let filename file =
+    OpamFilename.(create prefix (Base.of_string file))
+  in
+  if not skip_system then begin
+    let pkgs = filename dot_packages in
+    dump_system_packages (OpamFilename.to_string pkgs)
+  end;
+  let fn = filename dot_env in
+  write_file fn (env_to_string env)
+
+let drop_states ?gt ?rt ?st () =
+  OpamStd.Option.iter OpamSwitchState.drop st;
+  OpamStd.Option.iter OpamRepositoryState.drop rt;
+  OpamStd.Option.iter OpamGlobalState.drop gt
+
+let switch_filename dir =
+  let fn = Printf.sprintf "%s/%s" dir dot_switch in
+  OpamFile.make (OpamFilename.of_string fn)
+
+let export switch dir =
+  OpamGlobalState.with_ `Lock_none @@ fun gt ->
+  OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
+  let switch_out = switch_filename dir in
+  OpamSwitchCommand.export rt ~freeze:true ~full:true ~switch (Some switch_out);
+  drop_states ~gt ~rt ()
+
+let clean_switch = ref None
+
+let cleanup () =
+  log "cleaning up";
+  match !clean_switch with
+  | None -> ()
+  | Some (switch, skip_system, dir, sw) ->
+    output_system_packages_and_env ~skip_system dir (create_env sw);
+    export switch dir;
+    remove_switch switch;
+    OpamFilename.rmdir
+      (OpamFilename.Dir.of_string (OpamSwitch.to_string switch));
+    clean_switch := None
+
+let exit_error reason fmt =
+  cleanup ();
+  OpamConsole.error_and_exit reason fmt
+
+let convert_date x = string_of_int (int_of_float x)
+
 let env_matches env =
   (* TODO may relax e.g. OS_VERSION is DISTRIBUTION is detailed enough *)
   let opt_compare key v =
@@ -133,7 +195,7 @@ let env_matches env =
   List.for_all (fun (k, v) -> opt_compare k v) (custom_env None)
 
 (** Steps *)
-let import_switch switch export =
+let import_switch skip_system dir sw switch export =
   OpamGlobalState.with_ `Lock_write @@ fun gt ->
   OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
   let (), st =
@@ -142,7 +204,7 @@ let import_switch switch export =
   in
   log "Switch %s created!"
     (OpamConsole.colorise `green (OpamSwitch.to_string switch));
-  clean_switch := Some switch;
+  clean_switch := Some (switch, skip_system, dir, sw);
   log "SOURCE_DATE_EPOCH is %s" (Unix.getenv "SOURCE_DATE_EPOCH");
   log "now importing switch";
   let st = OpamSwitchCommand.import st export in
@@ -297,47 +359,8 @@ let diff_map track1 track2 =
       else OpamPackage.Map.add pkg file_map map
     ) track1 OpamPackage.Map.empty
 
-let dump_system_packages filename =
-  match OpamSysPoll.os_family () with
-  | Some "bsd" ->
-    begin match OpamSysPoll.os_distribution () with
-      | Some "freebsd" ->
-        let r = Sys.command ("/usr/sbin/pkg query %n-%v > " ^ filename) in
-        if r <> 0 then log "failed to dump system packages (exit %d)" r
-      | Some distrib ->
-        log "unsupported OS for host system packages (bsd %s)" distrib
-      | None ->
-        log "unsupported OS (no system packages), bsd without distribution"
-    end
-  | Some "debian" ->
-    let r = Sys.command ("dpkg-query --showformat='${Package}=${Version}\n' -W > " ^ filename) in
-    if r <> 0 then log "failed to dump system packages (exit %d)" r
-  | Some family ->
-    log "unsupported OS for host system packages %s" family
-  | None ->
-    log "unsupported OS (no system packages), no family"
 
-let restore_system_packages filename =
-  match OpamSysPoll.os_family () with
-  | Some "bsd" ->
-    begin match OpamSysPoll.os_distribution () with
-      | Some "freebsd" ->
-        let r = Sys.command ("cat " ^ filename ^ " | xargs /usr/sbin/pkg install -y") in
-        if r <> 0 then log "couldn't install packages"
-      | Some distrib ->
-        log "unsupported OS for host system packages (bsd %s)" distrib
-      | None ->
-        log "unsupported OS (no system packages), bsd without distribution"
-    end
-  | Some "debian" ->
-    let r = Sys.command ("cat " ^ filename ^ " | xargs apt-get install -y") in
-    if r <> 0 then log "couldn't install packages"
-  | Some family ->
-    log "unsupported OS for host system packages %s" family
-  | None ->
-    log "unsupported OS (no system packages), no family"
-
-let output_buildinfo_and_env ~skip_system sw_prefix dir map env =
+let output_artifacts sw_prefix dir map =
   let maps =
     OpamPackage.Map.fold (fun pkg map acc ->
         let value = OpamFile.Changes.write_to_string map in
@@ -368,13 +391,7 @@ let output_buildinfo_and_env ~skip_system sw_prefix dir map env =
   List.iter (fun (n, v) ->
       let fn = filename n in
       log "writing %s" (OpamFilename.to_string fn);
-      write_file fn v) maps;
-  if not skip_system then begin
-    let pkgs = filename dot_packages in
-    dump_system_packages (OpamFilename.to_string pkgs)
-  end;
-  let fn = filename dot_env in
-  write_file fn (env_to_string env)
+      write_file fn v) maps
 
 let install_system_packages dir =
   let filename = Printf.sprintf "%s/%s" dir dot_packages in
@@ -391,13 +408,6 @@ let copy_build_dir prefix switch =
     ~src:(OpamFilename.Dir.of_string (OpamSwitch.to_string switch))
     ~dst:(OpamFilename.Dir.of_string target);
   target
-
-let export switch dir =
-  OpamGlobalState.with_ `Lock_none @@ fun gt ->
-  OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
-  let switch_out = switch_filename dir in
-  OpamSwitchCommand.export rt ~freeze:true ~full:true ~switch (Some switch_out);
-  drop_states ~gt ~rt ()
 
 let generate_diffs root1 root2 final_map dir =
   let dir = OpamFilename.Dir.of_string dir
@@ -563,14 +573,13 @@ let rebuild ~skip_system ~sw ~bidir ~keep_build out =
   let started = Unix.time () in
   let switch = OpamSwitch.of_string sw in
   let switch_in = switch_filename bidir in
-  let packages = import_switch switch (Some switch_in) in
+  let packages = import_switch skip_system bidir sw switch (Some switch_in) in
   let atoms_or_locals =
     List.map (fun a -> `Atom (a.OpamPackage.name, None))
       (OpamPackage.Set.elements packages)
   in
   let tracking_map = tracking_maps switch atoms_or_locals in
-  let env = create_env sw in
-  output_buildinfo_and_env ~skip_system sw out tracking_map env;
+  output_artifacts sw out tracking_map;
   let build2nd = if keep_build then copy_build_dir out switch else sw in
   tracking_map, build2nd, started, packages
 
@@ -617,7 +626,7 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
       "I can't check reproductibility of nothing, by definition, it is";
   strip_env ~preserve:["HOME";"PATH"] ();
   Unix.putenv "PATH" (strip_path ());
-  Unix.putenv "SOURCE_DATE_EPOCH" 
+  Unix.putenv "SOURCE_DATE_EPOCH"
     (convert_date (match epoch with
       | Some x -> float_of_string x
       | None -> Unix.time ()));
@@ -639,20 +648,21 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
   (match compiler_pin, compiler with
    | None, None -> OpamStateConfig.update ~unlock_base:true ();
    | _ -> ());
-  if not keep_build then clean_switch := Some switch;
+  if not keep_build then clean_switch := Some (switch, skip_system, bidir, sw);
   let repos = add_repos repos in
   install_switch ~repos compiler_pin compiler switch;
   install switch atoms_or_locals;
   let tracking_map = tracking_maps switch atoms_or_locals in
-  let env = create_env sw in
-  output_buildinfo_and_env ~skip_system sw bidir tracking_map env;
-  (* switch export - make a full one *)
-  export switch bidir;
+  output_artifacts sw bidir tracking_map;
   let build1st =
     if keep_build
     then Some (copy_build_dir bidir switch)
     else None
   in
+  if keep_build then begin
+    output_system_packages_and_env ~skip_system bidir (create_env sw);
+    export switch bidir;
+  end;
   cleanup ();
   if twice then begin
     let outdir =
