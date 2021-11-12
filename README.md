@@ -1,4 +1,4 @@
-# orb: check opam package reproductibility
+# orb: check opam package reproducibility
 
 This tool can check if an opam package build is reproductible (cf.
 https://reproducible-builds.org). It has two subcommands: build and rebuild.
