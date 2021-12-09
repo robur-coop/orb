@@ -9,12 +9,12 @@ depends: [
   "ocaml" {>= "4.05.0"}
   "dune" {>= "2.0"}
   "cmdliner" {>= "1.0"}
-  "opam-client" {>= "2.1.1"}
-  "opam-repository" {>= "2.1.1"}
-  "opam-core" {>= "2.1.1"}
-  "opam-format" {>= "2.1.1"}
-  "opam-solver" {>= "2.1.1"}
-  "opam-state" {>= "2.1.1"}
+  "opam-client" {>= "2.1.2"}
+  "opam-repository" {>= "2.1.2"}
+  "opam-core" {>= "2.1.2"}
+  "opam-format" {>= "2.1.2"}
+  "opam-solver" {>= "2.1.2"}
+  "opam-state" {>= "2.1.2"}
 ]
 build: [
   ["dune" "subst"] {dev}

@@ -470,7 +470,7 @@ let common_start global_options disable_sandboxing build_options diffoscope =
   (* all environment variables need to be set/unset before the following line,
      which forces the lazy Unix.environment in OpamStd *)
   OpamArg.apply_global_options cli global_options;
-  OpamArg.apply_build_options build_options;
+  OpamArg.apply_build_options cli build_options;
   let root = OpamStateConfig.(!r.root_dir) in
   let config_f = OpamPath.config root in
   let already_init = OpamFile.exists config_f in
