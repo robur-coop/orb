@@ -1,4 +1,4 @@
-orb (a16d89b) unstable; urgency=medium
+orb (%%VERSION_NUM%%) unstable; urgency=medium
 
   * Initial release
 

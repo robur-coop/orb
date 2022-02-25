@@ -1,5 +1,5 @@
 name:         orb
-version:      a16d89b
+version:      %%VERSION_NUM%%
 origin:	      local/orb
 comment:      Opam reproducible builder
 www:	      https://github.com/roburio/orb
