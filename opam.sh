@@ -5,6 +5,12 @@
 #usage: opam var prefix -> return $PREFIX
 #usage: opam var lib -> return $PREFIX/lib
 #usage: opam subst (do nothing)
+#usage: opam --version [] -> return 2.1.2
+
+if [ "$1" = "--version" ]; then
+    echo "2.1.2";
+    exit 0;
+fi
 
 if [ $# = 3 ]; then
     if [ "$1" = "config" ]; then
