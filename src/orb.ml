@@ -783,11 +783,14 @@ let build_cmd =
       own risk, without sandboxing it is possible for a broken package script \
       to delete all your files."
   in
-  Term.((const build $ global_options cli $ disable_sandboxing $ build_options cli
-         $ diffoscope $ keep_build $ twice $ compiler_pin $ compiler
-         $ repos $ out_dir $ switch_name $ source_date_epoch $ skip_system
-         $ solver_timeout $ atom_or_local_list)),
-  Term.info "build" ~man ~doc
+  let term =
+    Term.((const build $ global_options cli $ disable_sandboxing $ build_options cli
+           $ diffoscope $ keep_build $ twice $ compiler_pin $ compiler
+           $ repos $ out_dir $ switch_name $ source_date_epoch $ skip_system
+           $ solver_timeout $ atom_or_local_list))
+  and info = Cmd.info "build" ~man ~doc
+  in
+  Cmd.v info term
 
 let rebuild_cmd =
   let doc = "Rebuild opam packages based on build information" in
@@ -818,9 +821,12 @@ let rebuild_cmd =
       own risk, without sandboxing it is possible for a broken package script \
       to delete all your files."
   in
-  Term.((const rebuild $ global_options cli $ disable_sandboxing $ build_options cli $ diffoscope
-         $ keep_build $ skip_system $ build_info $ out_dir)),
-  Term.info "rebuild" ~man ~doc
+  let term =
+    Term.((const rebuild $ global_options cli $ disable_sandboxing $ build_options cli $ diffoscope
+           $ keep_build $ skip_system $ build_info $ out_dir))
+  and info = Cmd.info "rebuild" ~man ~doc
+  in
+  Cmd.v info term
 
 let help man_format cmds = function
   | None -> `Help (`Pager, None)
@@ -832,22 +838,7 @@ let help_cmd =
     let doc = "The topic to get help on. `topics' lists the topics." in
     Arg.(value & pos 0 (some string) None & info [] ~docv:"TOPIC" ~doc)
   in
-  let doc = "display help about vmmc" in
-  let man =
-    [`S "DESCRIPTION";
-     `P "Prints help about orb commands and subcommands"]
-  in
-  Term.(ret (const help $ Term.man_format $ Term.choice_names $ topic)),
-  Term.info "help" ~doc ~man
-
-let default_cmd =
-  let doc = "OPAM reproducible builder" in
-  let man = [
-    `S "DESCRIPTION" ;
-    `P "$(tname) builds opam packages, checking for reproducibility." ;
-  ] in
-  Term.(ret (const help $ Term.man_format $ Term.choice_names $ Term.pure None)),
-  Term.info "orb" ~version:"%%VERSION%%" ~doc ~man
+  Term.(ret (const help $ Arg.man_format $ Term.choice_names $ topic))
 
 let cmds = [ build_cmd ; rebuild_cmd ]
 
@@ -855,8 +846,20 @@ let () =
   let buff = Buffer.create 1024 in
   let fmt = Format.formatter_of_buffer buff in
   OpamSystem.init ();
-  match Term.eval_choice default_cmd cmds ~err:fmt ~catch:true with
-  | `Error (`Term | `Parse) ->
+  let info =
+    let doc = "OPAM reproducible builder" in
+    let man = [
+      `S "DESCRIPTION" ;
+      `P "$(tname) builds opam packages, checking for reproducibility." ;
+    ] in
+    Cmd.info "orb" ~version:"%%VERSION%%" ~doc ~man
+  in
+  let group = Cmd.group ~default:help_cmd info cmds in
+  let r = Cmd.eval group ~err:fmt in
+  if r = 0 then
+    ()
+  else begin
     Format.pp_print_flush fmt ();
-    OpamConsole.msg "%s" (Buffer.contents buff)
-  | _ -> ()
+    OpamConsole.msg "%s" (Buffer.contents buff);
+    exit r
+  end
