@@ -247,7 +247,7 @@ let install_switch ?repos compiler_pin compiler_version switch =
   in
   drop_states ~gt ~rt ~st ()
 
-let install switch atoms_or_locals =
+let install ?deps_only switch atoms_or_locals =
   log "Install start";
   OpamGlobalState.with_ `Lock_none @@ fun gt ->
   OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
@@ -257,9 +257,9 @@ let install switch atoms_or_locals =
   in
   log "Install %s" (OpamFormula.string_of_atoms atoms);
   try
-    let st = OpamClient.install st atoms in
+    let st = OpamClient.install ?deps_only st atoms in
     log "Installed %s" (OpamFormula.string_of_atoms atoms);
-    drop_states ~gt ~rt ~st ()
+    gt, rt, st
   with
   | OpamStd.Sys.Exit n ->
     log "Installation failed with %d" n;
@@ -617,6 +617,79 @@ let drop_slash s =
   else
     s
 
+let of_opam_value =
+  (* TODO could use OpamFilter.commands .. .. *)
+  let open OpamParserTypes.FullPos in
+  let ( let* ) = Result.bind in
+  let rec extract_data = function
+    | { pelem = String s ; _ } -> Ok s
+    | { pelem = Ident s ; _ } ->
+      if String.equal s "make" then
+        match OpamSysPoll.os_family () with
+        | Some "bsd" -> Ok "gmake"
+        | _ -> Ok "make"
+      else
+        Ok s
+    | { pelem = List { pelem = lbody ; _ } ; _ } ->
+      let* data =
+        List.fold_left (fun acc v ->
+            let* acc = acc in
+            let* data = extract_data v in
+            Ok (data :: acc))
+          (Ok []) lbody
+      in
+      Ok (String.concat " " (List.rev data))
+    | _ -> Error (`Msg "expected a string")
+  in
+  function
+  | { pelem = List { pelem = lbody ; _ } ; _ } ->
+    let* data =
+      List.fold_left (fun acc v ->
+          let* acc = acc in
+          let* data = extract_data v in
+          Ok (data :: acc))
+        (Ok []) lbody
+    in
+    if
+      List.exists
+        (function { pelem = List _ ; _ } -> true | _ -> false)
+        lbody
+    then
+      Ok (List.rev data)
+    else
+      Ok [ String.concat " " (List.rev data) ]
+  | _ -> Error (`Msg "expected a list or a nested list")
+
+let repos_of_opam =
+  let open OpamParserTypes.FullPos in
+  let ( let* ) = Result.bind in
+  let extract_string = function
+    | { pelem = String s ; _ } -> Ok s
+    | _ -> Error (`Msg "expected a string")
+  in
+  let extract_repo = function
+    | { pelem = List { pelem = lbody ; _ } ; _ } ->
+      begin match lbody with
+        | [ name ; url ] ->
+          let* name = extract_string name in
+          let* url = extract_string url in
+          Ok (name, url)
+        | _ -> Error (`Msg "expected exactly two strings")
+      end
+    | _ -> Error (`Msg "expected a pair of strings")
+  in
+  function
+  | { pelem = List { pelem = lbody ; _ } ; _ } ->
+    let* data =
+      List.fold_left (fun acc v ->
+          let* acc = acc in
+          let* repo = extract_repo v in
+          Ok (repo :: acc))
+        (Ok []) lbody
+    in
+    Ok (List.rev data)
+  | _ -> Error (`Msg "expected a list")
+
 (* Main function *)
 let build global_options disable_sandboxing build_options diffoscope keep_build twice compiler_pin compiler
     repos out_dir switch_name epoch skip_system solver_timeout atoms_or_locals =
@@ -628,8 +701,8 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
   Unix.putenv "PATH" (strip_path ());
   Unix.putenv "SOURCE_DATE_EPOCH"
     (convert_date (match epoch with
-      | Some x -> float_of_string x
-      | None -> Unix.time ()));
+         | Some x -> float_of_string x
+         | None -> Unix.time ()));
   (match solver_timeout with None -> () | Some x -> Unix.putenv "OPAMSOLVERTIMEOUT" x);
   Unix.putenv "OPAMERRLOGLEN" "0";
   let name = project_name_from_arg atoms_or_locals in
@@ -651,7 +724,106 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
   if not keep_build then clean_switch := Some (switch, skip_system, bidir, sw);
   let repos = add_repos repos in
   install_switch ~repos compiler_pin compiler switch;
-  install switch atoms_or_locals;
+  (* we used to install the one package *)
+  (* now, we'd like:
+     - if this is a mirage4 unikernel
+     - install --deps-only
+     -- OpamAction.(download_package && prepare_package_source)
+     - add overlay repositories
+     - execute mirage configure <options> <-- x-mirage-pre-build
+     - run "make depend" (invokes opam-monorepo) <-- x-mirage-pre-build
+     -- OpamAction.(build_package && install_package)
+  *)
+  let install_and_drop () =
+    let gt, rt, st = install switch atoms_or_locals in
+    drop_states ~gt ~rt ~st ();
+  in
+  (match atoms_or_locals with
+   | [ `Atom (name, _) ] ->
+     OpamGlobalState.with_ `Lock_none @@ fun gt ->
+     OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
+     OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
+     let package = OpamSwitchState.get_package st name in
+     let opam = OpamSwitchState.opam st package in
+     drop_states ~gt ~rt ~st ();
+     begin
+       match OpamFile.OPAM.extended opam "x-mirage-pre-build" of_opam_value with
+       | None -> install_and_drop ()
+       | Some Ok stuff ->
+         let gt, rt, st = install ~deps_only:true switch atoms_or_locals in
+         let dirname = OpamFilename.mk_tmp_dir () in
+         let cleanup_dir () = OpamFilename.rmdir dirname in
+         let job =
+           let open OpamProcess.Job.Op in
+           OpamUpdate.download_package_source st package dirname @@+ function
+           | Some (Not_available (_,s)), _ | _, (_, Not_available (_, s)) :: _ ->
+             log "failed to download sources %s" s;
+             cleanup_dir ();
+             exit 1
+           | _ ->
+             OpamAction.prepare_package_source st package dirname @@| function
+             | None -> ()
+             | Some e ->
+               log "failed to extract sources %s" (Printexc.to_string e);
+               cleanup_dir ();
+               exit 1
+         in
+         OpamProcess.Job.run job;
+         drop_states ~gt ~rt ~st ();
+         (match OpamFile.OPAM.extended opam "x-mirage-extra-repo" repos_of_opam with
+          | None -> ()
+          | Some Error `Msg m ->
+            log "error parsing extra repositories %s" m;
+            cleanup_dir ();
+            exit 1
+          | Some Ok repos ->
+            let repo_names =
+              add_repos (Some (List.map (fun (n, u) -> n ^ ":" ^ u) repos))
+            in
+            OpamGlobalState.with_ `Lock_none @@ fun gt ->
+            OpamSwitchState.update_repositories gt (fun old_repos ->
+                repo_names @ old_repos) switch
+         );
+         OpamFilename.in_dir dirname (fun () ->
+             List.iter (fun cmd ->
+                 let r = Sys.command cmd in
+                 if r <> 0 then begin
+                   log "failed to execute %s" cmd;
+                   cleanup_dir ();
+                   exit 1
+                 end)
+               stuff);
+         OpamGlobalState.with_ `Lock_none @@ fun gt ->
+         OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
+         OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
+         let job =
+           let open OpamProcess.Job.Op in
+           OpamAction.build_package st dirname package @@+ function
+           | Some exn ->
+             log "failed to build package: %s" (Printexc.to_string exn);
+             cleanup_dir ();
+             exit 1
+           | None ->
+             OpamAction.install_package st ~build_dir:dirname package @@| function
+             | Left _ -> ()
+             | Right exn ->
+               log "failed to install package: %s" (Printexc.to_string exn);
+               cleanup_dir ();
+               exit 1
+         in
+         OpamProcess.Job.run job;
+         let st =
+           { st with installed_roots =
+                       OpamPackage.Set.add package st.installed_roots }
+         in
+         OpamSwitchAction.write_selections st;
+         cleanup_dir ();
+         drop_states ~gt ~rt ~st ();
+       | Some Error `Msg m ->
+         log "error parsing x-mirage-pre-build: %s" m;
+         exit 1
+     end
+   | _ -> install_and_drop ());
   let tracking_map = tracking_maps switch atoms_or_locals in
   output_artifacts sw bidir tracking_map;
   let build1st =
