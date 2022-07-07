@@ -622,23 +622,20 @@ let of_opam_value =
   let open OpamParserTypes.FullPos in
   let ( let* ) = Result.bind in
   let rec extract_data = function
-    | { pelem = String s ; _ } -> Ok s
+    | { pelem = String s ; _ } -> Ok [ s ]
     | { pelem = Ident s ; _ } ->
       if String.equal s "make" then
         match OpamSysPoll.os_family () with
-        | Some "bsd" -> Ok "gmake"
-        | _ -> Ok "make"
+        | Some "bsd" -> Ok [ "gmake" ]
+        | _ -> Ok [ "make" ]
       else
-        Ok s
+        Ok [ s ]
     | { pelem = List { pelem = lbody ; _ } ; _ } ->
-      let* data =
-        List.fold_left (fun acc v ->
-            let* acc = acc in
-            let* data = extract_data v in
-            Ok (data :: acc))
-          (Ok []) lbody
-      in
-      Ok (String.concat " " (List.rev data))
+      List.fold_left (fun acc v ->
+          let* acc = acc in
+          let* data = extract_data v in
+          Ok (acc @ data))
+        (Ok []) lbody
     | _ -> Error (`Msg "expected a string")
   in
   function
@@ -650,14 +647,7 @@ let of_opam_value =
           Ok (data :: acc))
         (Ok []) lbody
     in
-    if
-      List.exists
-        (function { pelem = List _ ; _ } -> true | _ -> false)
-        lbody
-    then
-      Ok (List.rev data)
-    else
-      Ok [ String.concat " " (List.rev data) ]
+    Ok (List.rev data)
   | _ -> Error (`Msg "expected a list or a nested list")
 
 let repos_of_opam =
@@ -750,7 +740,9 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
        match OpamFile.OPAM.extended opam "x-mirage-pre-build" of_opam_value with
        | None -> install_and_drop ()
        | Some Ok stuff ->
+         log "installing dependencies";
          let gt, rt, st = install ~deps_only:true switch atoms_or_locals in
+         log "installed dependencies";
          let dirname = OpamFilename.mk_tmp_dir () in
          let cleanup_dir () = OpamFilename.rmdir dirname in
          let job =
@@ -769,7 +761,6 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
                exit 1
          in
          OpamProcess.Job.run job;
-         drop_states ~gt ~rt ~st ();
          (match OpamFile.OPAM.extended opam "x-mirage-extra-repo" repos_of_opam with
           | None -> ()
           | Some Error `Msg m ->
@@ -780,19 +771,40 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
             let repo_names =
               add_repos (Some (List.map (fun (n, u) -> n ^ ":" ^ u) repos))
             in
-            OpamGlobalState.with_ `Lock_none @@ fun gt ->
             OpamSwitchState.update_repositories gt (fun old_repos ->
                 repo_names @ old_repos) switch
          );
+         drop_states ~gt ~rt ~st ();
          OpamFilename.in_dir dirname (fun () ->
-             List.iter (fun cmd ->
+             let path = Unix.getenv "PATH" in
+             let p' = prefix ^ "/bin:" ^ path in
+             log "setting PATH %s" p';
+             Unix.putenv "PATH" p';
+             Unix.putenv "OPAMSWITCH" sw;
+             Unix.putenv "OPAM_SWITCH_PREFIX" prefix;
+             Unix.putenv "CAML_LD_LIBRARY_PATH"
+               (prefix ^ "/lib/stublibs:" ^ prefix ^ "/lib/ocaml/stublibs:" ^
+                prefix ^ "/lib/ocaml");
+             let reset_env () =
+               Unix.putenv "PATH" path;
+               unsetenv "OPAMSWITCH";
+               unsetenv "OPAM_SWITCH_PREFIX";
+               unsetenv "CAML_LD_LIBRARY_PATH"
+             in
+             List.iter (fun cmd_args ->
+                 let cmd = match cmd_args with
+                   | cmd :: args -> Filename.quote_command cmd args
+                   | [] -> ""
+                 in
                  let r = Sys.command cmd in
                  if r <> 0 then begin
-                   log "failed to execute %s" cmd;
+                   log "failed to execute %s: %d" cmd r;
                    cleanup_dir ();
+                   reset_env ();
                    exit 1
                  end)
-               stuff);
+               stuff;
+             reset_env ());
          OpamGlobalState.with_ `Lock_none @@ fun gt ->
          OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
          OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
