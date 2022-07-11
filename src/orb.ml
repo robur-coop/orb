@@ -68,8 +68,6 @@ let custom_env s = [
   "SWITCH_PATH", s
 ]
 
-let custom_env_keys = List.map fst (custom_env (Some ""))
-
 let create_env (s : string) =
   Array.to_list (Unix.environment () ) @
   List.fold_left
@@ -687,12 +685,12 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
   Option.may (fun opamroot -> Unix.putenv "OPAMROOT" opamroot) opam_root;
   let bidir = match out_dir with None -> "." | Some dir -> drop_slash dir in
   let switch = OpamSwitch.of_string sw in
-  let prefix =
-    Option.default (Unix.getenv "HOME" ^ "/.opam") opam_root ^ "/" ^ sw
-  in
+  let root = Option.default (Unix.getenv "HOME" ^ "/.opam") opam_root in
+  let prefix = root ^ "/" ^ sw in
   Unix.putenv "PREFIX" prefix;
   Unix.putenv "PKG_CONFIG_PATH" (prefix ^ "/lib/pkgconfig");
   common_start global_options disable_sandboxing build_options diffoscope;
+  log "using root %S and switch %S" root sw;
   if not keep_build then clean_switch := Some (switch, skip_system, bidir, sw);
   let repos = add_repos repos in
   install_switch ~repos switch;
@@ -837,6 +835,7 @@ let rebuild global_options disable_sandboxing build_options diffoscope keep_buil
     let out = match out_dir with None -> "." | Some dir -> drop_slash dir in
     let old = drop_slash dir in
     let old_started, env = find_env old in
+    let custom_env_keys = List.map fst (custom_env (Some "")) in
     List.iter (fun (k, v) -> if List.mem k custom_env_keys then () else Unix.putenv k v) env;
     if not skip_system then install_system_packages old;
     common_start global_options disable_sandboxing build_options diffoscope;
