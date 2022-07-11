@@ -214,7 +214,8 @@ let import_switch skip_system dir sw switch export =
   drop_states ~gt ~rt ~st ();
   roots
 
-let install_switch ?repos compiler_pin compiler_version switch =
+let install_switch ?repos switch =
+  OpamStateConfig.update ~unlock_base:true ();
   OpamGlobalState.with_ `Lock_write @@ fun gt ->
   OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
   let (), st =
@@ -223,28 +224,6 @@ let install_switch ?repos compiler_pin compiler_version switch =
   in
   log "Switch %s created!"
     (OpamConsole.colorise `green (OpamSwitch.to_string switch));
-  let st = match compiler_pin, compiler_version with
-    | None, None -> st
-    | Some path, None ->
-      let src = `Source (OpamUrl.parse ("git+file://" ^ path)) in
-      let pkg = OpamPackage.Name.of_string "ocaml-variants" in
-      let st = OpamClient.PIN.pin ~action:false st pkg src in
-      log "Pinned compiler to %s" path;
-      st
-    | None, Some v ->
-      let version = OpamPackage.Version.of_string v in
-      let pkg =
-        OpamPackage.Name.of_string
-          (if OpamStd.String.contains_char v '+' then "ocaml-variants" else "ocaml")
-      in
-      let st = OpamClient.PIN.pin ~action:false st pkg (`Version version) in
-      log "Pinned compiler to %s.%s" (OpamPackage.Version.to_string version)
-        (OpamPackage.Version.to_string version);
-      st
-    | Some _, Some _ ->
-      exit_error `Bad_arguments
-        "Both compiler-pin and compiler provided, choose one.";
-  in
   drop_states ~gt ~rt ~st ()
 
 let install ?deps_only switch atoms_or_locals =
@@ -681,7 +660,7 @@ let repos_of_opam =
   | _ -> Error (`Msg "expected a list")
 
 (* Main function *)
-let build global_options disable_sandboxing build_options diffoscope keep_build twice compiler_pin compiler
+let build global_options disable_sandboxing build_options diffoscope keep_build twice
     repos out_dir switch_name epoch skip_system solver_timeout atoms_or_locals =
   let started = Unix.time () in
   if atoms_or_locals = [] then
@@ -708,12 +687,9 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
   Unix.putenv "PREFIX" prefix;
   Unix.putenv "PKG_CONFIG_PATH" (prefix ^ "/lib/pkgconfig");
   common_start global_options disable_sandboxing build_options diffoscope;
-  (match compiler_pin, compiler with
-   | None, None -> OpamStateConfig.update ~unlock_base:true ();
-   | _ -> ());
   if not keep_build then clean_switch := Some (switch, skip_system, bidir, sw);
   let repos = add_repos repos in
-  install_switch ~repos compiler_pin compiler switch;
+  install_switch ~repos switch;
   (* we used to install the one package *)
   (* now, we'd like:
      - if this is a mirage4 unikernel
@@ -925,16 +901,6 @@ let build_cmd =
   let twice =
     mk_flag [ "twice" ] "build twice, output differences"
   in
-  let compiler_pin =
-    mk_opt [ "compiler-pin" ] "[DIR]"
-      "use the compiler in [DIR] for the temporary switch"
-      Arg.(some string) None
-  in
-  let compiler =
-    mk_opt [ "compiler" ] "[VERSION]"
-      "use the compiler [VERSION] for the temporary switch"
-      Arg.(some string) None
-  in
   let repos =
     mk_opt [ "repos" ] "REPOS"
       "Include only packages that took their origin from one of the given \
@@ -969,7 +935,7 @@ let build_cmd =
   in
   let term =
     Term.((const build $ global_options cli $ disable_sandboxing $ build_options cli
-           $ diffoscope $ keep_build $ twice $ compiler_pin $ compiler
+           $ diffoscope $ keep_build $ twice
            $ repos $ out_dir $ switch_name $ source_date_epoch $ skip_system
            $ solver_timeout $ atom_or_local_list))
   and info = Cmd.info "build" ~man ~doc
