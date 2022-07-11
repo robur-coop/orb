@@ -374,11 +374,11 @@ let find_build_dir dir =
   let dir = Printf.sprintf "%s/%s" dir dot_build in
   if Sys.file_exists dir then Some dir else None
 
-let copy_build_dir prefix switch =
-  let target = Printf.sprintf "%s/%s" prefix dot_build in
+let copy_build_dir tgt src =
+  let target = Printf.sprintf "%s/%s" tgt dot_build in
   log "preserving build dir in %s" target;
   OpamFilename.copy_dir
-    ~src:(OpamFilename.Dir.of_string (OpamSwitch.to_string switch))
+    ~src:(OpamFilename.Dir.of_string src)
     ~dst:(OpamFilename.Dir.of_string target);
   target
 
@@ -551,7 +551,7 @@ let rebuild ~skip_system ~sw ~bidir ~keep_build out =
   in
   let tracking_map = tracking_maps switch atoms in
   output_artifacts sw out tracking_map;
-  let build2nd = if keep_build then copy_build_dir out switch else sw in
+  let build2nd = if keep_build then copy_build_dir out sw else sw in
   tracking_map, build2nd, started, packages
 
 let add_repo s (name, url) =
@@ -817,7 +817,7 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
   output_artifacts prefix bidir tracking_map;
   let build1st =
     if keep_build
-    then Some (copy_build_dir bidir switch)
+    then Some (copy_build_dir bidir prefix)
     else None
   in
   if keep_build then begin
