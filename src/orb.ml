@@ -60,8 +60,6 @@ let dot_packages = "system-packages"
 let dot_build = "build"
 let dot_diffoscope = ".diffoscope"
 
-let custom_env_keys = [ "OS" ; "OS_DISTRIBUTION" ; "OS_VERSION" ; "OS_FAMILY" ; "SWITCH_PATH" ]
-
 let custom_env s = [
   "OS", OpamSysPoll.os ();
   "OS_DISTRIBUTION", OpamSysPoll.os_distribution ();
@@ -69,6 +67,8 @@ let custom_env s = [
   "OS_FAMILY", OpamSysPoll.os_family ();
   "SWITCH_PATH", s
 ]
+
+let custom_env_keys = List.map fst (custom_env (Some ""))
 
 let create_env (s : string) =
   Array.to_list (Unix.environment () ) @
@@ -348,7 +348,7 @@ let output_artifacts sw_prefix dir map =
   OpamPackage.Map.iter (fun _ map ->
       OpamStd.String.Map.iter (fun name -> function
           | OpamDirTrack.Added _ ->
-            let src = Format.sprintf "%s/_opam/%s" sw_prefix name
+            let src = Format.sprintf "%s/%s" sw_prefix name
             and tgt = Format.sprintf "%s/%s" dir name
             in
             let r = Sys.command ("mkdir -p " ^ Filename.dirname tgt) in
@@ -386,8 +386,8 @@ let copy_build_dir prefix switch =
 
 let generate_diffs root1 root2 final_map dir =
   let dir = OpamFilename.Dir.of_string dir
-  and root1 = OpamFilename.Dir.of_string (root1 ^ "/_opam")
-  and root2 = OpamFilename.Dir.of_string (root2 ^ "/_opam")
+  and root1 = OpamFilename.Dir.of_string root1
+  and root2 = OpamFilename.Dir.of_string root2
   in
   let open OpamFilename.Op in
   OpamFilename.mkdir dir;
@@ -670,14 +670,26 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
   Unix.putenv "OPAMERRLOGLEN" "0";
   let name = project_name_from_arg atoms in
   Unix.putenv "ORB_BUILDING_PACKAGE" name;
-  let tmp_dir = match switch_name with
-    | None -> OpamSystem.mk_temp_dir ~prefix:("bi-" ^ name) ()
-    | Some x -> drop_slash x
+  let opam_root, sw =
+    match switch_name with
+    | None -> None, Filename.(basename (temp_file "orb" "temp"))
+    | Some x ->
+      let x = drop_slash x in
+      if String.get x 0 = '/' then
+        Some (Filename.dirname x), Filename.basename x
+      else
+        try
+          let _ = String.index x '/' in
+          invalid_arg "either absolute path or no /"
+        with
+          Not_found -> None, x
   in
-  let bidir = match out_dir with None -> tmp_dir | Some dir -> drop_slash dir in
-  let sw = tmp_dir ^ "/build" in
+  Option.may (fun opamroot -> Unix.putenv "OPAMROOT" opamroot) opam_root;
+  let bidir = match out_dir with None -> "." | Some dir -> drop_slash dir in
   let switch = OpamSwitch.of_string sw in
-  let prefix = sw ^ "/_opam" in
+  let prefix =
+    Option.default (Unix.getenv "HOME" ^ "/.opam") opam_root ^ "/" ^ sw
+  in
   Unix.putenv "PREFIX" prefix;
   Unix.putenv "PKG_CONFIG_PATH" (prefix ^ "/lib/pkgconfig");
   common_start global_options disable_sandboxing build_options diffoscope;
@@ -745,22 +757,10 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
                 repo_names @ old_repos) switch
          );
          drop_states ~gt ~rt ~st ();
+         OpamGlobalState.with_ `Lock_write @@ fun gt ->
+         OpamSwitchCommand.switch `Lock_none gt switch;
+         drop_states ~gt ();
          OpamFilename.in_dir dirname (fun () ->
-             let path = Unix.getenv "PATH" in
-             let p' = prefix ^ "/bin:" ^ path in
-             log "setting PATH %s" p';
-             Unix.putenv "PATH" p';
-             Unix.putenv "OPAMSWITCH" sw;
-             Unix.putenv "OPAM_SWITCH_PREFIX" prefix;
-             Unix.putenv "CAML_LD_LIBRARY_PATH"
-               (prefix ^ "/lib/stublibs:" ^ prefix ^ "/lib/ocaml/stublibs:" ^
-                prefix ^ "/lib/ocaml");
-             let reset_env () =
-               Unix.putenv "PATH" path;
-               unsetenv "OPAMSWITCH";
-               unsetenv "OPAM_SWITCH_PREFIX";
-               unsetenv "CAML_LD_LIBRARY_PATH"
-             in
              List.iter (fun cmd_args ->
                  let cmd = match cmd_args with
                    | cmd :: args -> Filename.quote_command cmd args
@@ -770,11 +770,9 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
                  if r <> 0 then begin
                    log "failed to execute %s: %d" cmd r;
                    cleanup_dir ();
-                   reset_env ();
                    exit 1
                  end)
-               stuff;
-             reset_env ());
+               stuff);
          OpamGlobalState.with_ `Lock_none @@ fun gt ->
          OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
          OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
@@ -881,6 +879,17 @@ let keep_build =
 let skip_system =
   mk_flag [ "skip-system" ] "skip system packages"
 
+let out_dir =
+  mk_opt [ "out" ] "[DIR]"
+    "Use [DIR] as build info prefix (defaults to .)."
+    Arg.(some string) None
+
+let disable_sandboxing =
+  mk_flag ["disable-sandboxing"]
+    "Use a default configuration with sandboxing disabled. Use this at your \
+     own risk, without sandboxing it is possible for a broken package script \
+     to delete all your files."
+
 let build_cmd =
   let doc = "Build opam packages and output build information for rebuilding" in
   let man = [
@@ -901,14 +910,11 @@ let build_cmd =
        repositories."
       Arg.(some & list & string) None
   in
-  let out_dir =
-    mk_opt [ "out" ] "[DIR]"
-      "Use [DIR] as build info prefix (defaults to a temporary directory)."
-      Arg.(some string) None
-  in
   let switch_name =
-    mk_opt [ "switch-name" ] "[DIR]"
-      "use [DIR] as switch name (defaults to a temporary directory)"
+    mk_opt [ "switch-name" ] "[NAME]"
+      "use [NAME] as switch name (defaults to \
+       `Filename.(basename (temp_file 'orb' 'temp'))`). An absolute path will \
+       set OPAMROOT to the directory, and the switch name is the last segment."
       Arg.(some string) None
   in
   let source_date_epoch =
@@ -920,12 +926,6 @@ let build_cmd =
     mk_opt [ "solver-timeout" ] "[seconds]"
       "use the provided solver timeout instead of the default (sets OPAMSOLVERTIMEOUT)"
       Arg.(some string) None
-  in
-  let disable_sandboxing =
-    mk_flag ["disable-sandboxing"]
-      "Use a default configuration with sandboxing disabled. Use this at your \
-      own risk, without sandboxing it is possible for a broken package script \
-      to delete all your files."
   in
   let term =
     Term.((const build $ global_options cli $ disable_sandboxing $ build_options cli
@@ -953,17 +953,6 @@ let rebuild_cmd =
   let build_info =
     let doc = "use build information in the provided directory" in
     Arg.(value & pos 0 string "" & info [] ~doc ~docv:"DIR")
-  in
-  let out_dir =
-    mk_opt [ "out" ] "[DIR]"
-      "Use [DIR] as build info prefix (defaults to a temporary directory)."
-      Arg.(some string) None
-  in
-  let disable_sandboxing =
-    mk_flag ["disable-sandboxing"]
-      "Use a default configuration with sandboxing disabled. Use this at your \
-      own risk, without sandboxing it is possible for a broken package script \
-      to delete all your files."
   in
   let term =
     Term.((const rebuild $ global_options cli $ disable_sandboxing $ build_options cli $ diffoscope
