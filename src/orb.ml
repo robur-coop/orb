@@ -760,6 +760,10 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
          OpamSwitchCommand.switch `Lock_none gt switch;
          drop_states ~gt ();
          OpamFilename.in_dir dirname (fun () ->
+             let path = Unix.getenv "PATH" in
+             let p' = prefix ^ "/bin:" ^ path in
+             log "setting PATH %s" p';
+             Unix.putenv "PATH" p';
              List.iter (fun cmd_args ->
                  let cmd = match cmd_args with
                    | cmd :: args -> Filename.quote_command cmd args
@@ -768,10 +772,12 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
                  let r = Sys.command cmd in
                  if r <> 0 then begin
                    log "failed to execute %s: %d" cmd r;
+                   unsetenv "PATH";
                    cleanup_dir ();
                    exit 1
                  end)
-               stuff);
+               stuff;
+             unsetenv "PATH");
          OpamGlobalState.with_ `Lock_none @@ fun gt ->
          OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
          OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
