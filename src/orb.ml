@@ -231,7 +231,11 @@ let install ?deps_only switch atoms =
   OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
   log "Install %s" (OpamFormula.string_of_atoms atoms);
   try
-    let st = OpamClient.install ?deps_only st atoms in
+    let add_to_roots = match deps_only with
+      | None -> None
+      | Some x -> Some (not x)
+    in
+    let st = OpamClient.install ?add_to_roots ?deps_only st atoms in
     log "Installed %s" (OpamFormula.string_of_atoms atoms);
     gt, rt, st
   with
@@ -728,12 +732,12 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
          let cleanup_dir () = OpamFilename.rmdir dirname in
          let job =
            let open OpamProcess.Job.Op in
-           OpamUpdate.download_package_source st package dirname @@+ function
-           | Some (Not_available (_,s)), _ | _, (_, Not_available (_, s)) :: _ ->
+           OpamAction.download_package st package @@+ function
+           | Some (_, s) ->
              log "failed to download sources %s" s;
              cleanup_dir ();
              exit 1
-           | _ ->
+           | None ->
              OpamAction.prepare_package_source st package dirname @@| function
              | None -> ()
              | Some e ->
