@@ -689,6 +689,7 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
   let prefix = root ^ "/" ^ sw in
   Unix.putenv "PREFIX" prefix;
   Unix.putenv "PKG_CONFIG_PATH" (prefix ^ "/lib/pkgconfig");
+  Unix.putenv "OPAMCONFIRMLEVEL" "unsafe-yes";
   common_start global_options disable_sandboxing build_options diffoscope;
   log "using root %S and switch %S" root sw;
   if not keep_build then clean_switch := Some (switch, skip_system, bidir, sw);
