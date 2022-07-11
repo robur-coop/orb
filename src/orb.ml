@@ -738,6 +738,8 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
              cleanup_dir ();
              exit 1
            | None ->
+             let src = OpamSwitchState.source_dir st package in
+             OpamFilename.copy_dir ~src ~dst:dirname;
              OpamAction.prepare_package_source st package dirname @@| function
              | None -> ()
              | Some e ->
