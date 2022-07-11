@@ -226,14 +226,11 @@ let install_switch ?repos switch =
     (OpamConsole.colorise `green (OpamSwitch.to_string switch));
   drop_states ~gt ~rt ~st ()
 
-let install ?deps_only switch atoms_or_locals =
+let install ?deps_only switch atoms =
   log "Install start";
   OpamGlobalState.with_ `Lock_none @@ fun gt ->
   OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
   OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
-  let st, atoms =
-    OpamAuxCommands.autopin st ~simulate:true atoms_or_locals
-  in
   log "Install %s" (OpamFormula.string_of_atoms atoms);
   try
     let st = OpamClient.install ?deps_only st atoms in
@@ -247,13 +244,12 @@ let install ?deps_only switch atoms_or_locals =
     log "Exception while installing: %s" (Printexc.to_string e);
     exit 1
 
-let tracking_maps switch atoms_or_locals =
+let tracking_maps switch atoms =
   OpamGlobalState.with_ `Lock_none @@ fun gt ->
   OpamSwitchState.with_ `Lock_none ~switch gt @@ fun st ->
   log "tracking map got locks";
   let st, packages =
     let p =
-      let _, atoms = OpamAuxCommands.resolve_locals atoms_or_locals in
       log "tracking map %d atoms (package set %d - %d packages)"
         (List.length atoms)
         (OpamPackage.Set.cardinal st.installed)
@@ -267,7 +263,7 @@ let tracking_maps switch atoms_or_locals =
     st, p
   in
   log "tracking map got st and %d packages (%d atoms_or_locals)"
-    (OpamPackage.Set.cardinal packages) (List.length atoms_or_locals);
+    (OpamPackage.Set.cardinal packages) (List.length atoms);
   let tr =
     OpamPackage.Set.fold (fun pkg acc ->
         let name = OpamPackage.name pkg in
@@ -488,9 +484,7 @@ let compare_builds tracking_map tracking_map' dir build1st build2nd diffoscope =
        | Some build1 -> generate_diffs build1 build2nd final_map dir)
 
 let project_name_from_arg = function
-  | `Atom (name, _) :: _ -> OpamPackage.Name.to_string name
-  | `Dirname dir :: _ -> OpamFilename.Dir.to_string dir
-  | `Filename file :: _ -> OpamFilename.to_string file
+  | (name, _) :: _ -> OpamPackage.Name.to_string name
   | _ -> invalid_arg "empty atoms_or_locals"
 
 let project_name_from_dir dir = (* the first <name>.opam-switch *)
@@ -553,11 +547,11 @@ let rebuild ~skip_system ~sw ~bidir ~keep_build out =
   let switch = OpamSwitch.of_string sw in
   let switch_in = switch_filename bidir in
   let packages = import_switch skip_system bidir sw switch (Some switch_in) in
-  let atoms_or_locals =
-    List.map (fun a -> `Atom (a.OpamPackage.name, None))
+  let atoms =
+    List.map (fun a -> a.OpamPackage.name, None)
       (OpamPackage.Set.elements packages)
   in
-  let tracking_map = tracking_maps switch atoms_or_locals in
+  let tracking_map = tracking_maps switch atoms in
   output_artifacts sw out tracking_map;
   let build2nd = if keep_build then copy_build_dir out switch else sw in
   tracking_map, build2nd, started, packages
@@ -661,9 +655,9 @@ let repos_of_opam =
 
 (* Main function *)
 let build global_options disable_sandboxing build_options diffoscope keep_build twice
-    repos out_dir switch_name epoch skip_system solver_timeout atoms_or_locals =
+    repos out_dir switch_name epoch skip_system solver_timeout atoms =
   let started = Unix.time () in
-  if atoms_or_locals = [] then
+  if atoms = [] then
     exit_error `Bad_arguments
       "I can't check reproductibility of nothing, by definition, it is";
   strip_env ~preserve:["HOME";"PATH"] ();
@@ -674,7 +668,7 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
          | None -> Unix.time ()));
   (match solver_timeout with None -> () | Some x -> Unix.putenv "OPAMSOLVERTIMEOUT" x);
   Unix.putenv "OPAMERRLOGLEN" "0";
-  let name = project_name_from_arg atoms_or_locals in
+  let name = project_name_from_arg atoms in
   Unix.putenv "ORB_BUILDING_PACKAGE" name;
   let tmp_dir = match switch_name with
     | None -> OpamSystem.mk_temp_dir ~prefix:("bi-" ^ name) ()
@@ -701,11 +695,11 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
      -- OpamAction.(build_package && install_package)
   *)
   let install_and_drop () =
-    let gt, rt, st = install switch atoms_or_locals in
+    let gt, rt, st = install switch atoms in
     drop_states ~gt ~rt ~st ();
   in
-  (match atoms_or_locals with
-   | [ `Atom (name, _) ] ->
+  (match atoms with
+   | [ name, _ ] ->
      OpamGlobalState.with_ `Lock_none @@ fun gt ->
      OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
      OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
@@ -717,7 +711,7 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
        | None -> install_and_drop ()
        | Some Ok stuff ->
          log "installing dependencies";
-         let gt, rt, st = install ~deps_only:true switch atoms_or_locals in
+         let gt, rt, st = install ~deps_only:true switch atoms in
          log "installed dependencies";
          let dirname = OpamFilename.mk_tmp_dir () in
          let cleanup_dir () = OpamFilename.rmdir dirname in
@@ -812,7 +806,7 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
          exit 1
      end
    | _ -> install_and_drop ());
-  let tracking_map = tracking_maps switch atoms_or_locals in
+  let tracking_map = tracking_maps switch atoms in
   output_artifacts sw bidir tracking_map;
   let build1st =
     if keep_build
@@ -937,7 +931,7 @@ let build_cmd =
     Term.((const build $ global_options cli $ disable_sandboxing $ build_options cli
            $ diffoscope $ keep_build $ twice
            $ repos $ out_dir $ switch_name $ source_date_epoch $ skip_system
-           $ solver_timeout $ atom_or_local_list))
+           $ solver_timeout $ atom_list))
   and info = Cmd.info "build" ~man ~doc
   in
   Cmd.v info term
