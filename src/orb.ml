@@ -783,25 +783,29 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
          OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
          let job =
            let open OpamProcess.Job.Op in
+           log "now building";
            OpamAction.build_package st dirname package @@+ function
            | Some exn ->
              log "failed to build package: %s" (Printexc.to_string exn);
              cleanup_dir ();
              exit 1
            | None ->
+             log "built, now installing";
              OpamAction.install_package st ~build_dir:dirname package @@| function
-             | Left _ -> ()
+             | Left conf ->
+               log "installed, now registering";
+               let conf_files =
+                 let add_conf conf = OpamPackage.Name.Map.add package.name conf st.conf_files in
+                 OpamStd.Option.map_default add_conf st.conf_files conf
+               in
+               let _ = OpamSwitchAction.add_to_installed {st with conf_files} ~root:true package in
+               ()
              | Right exn ->
                log "failed to install package: %s" (Printexc.to_string exn);
                cleanup_dir ();
                exit 1
          in
          OpamProcess.Job.run job;
-         let st =
-           { st with installed_roots =
-                       OpamPackage.Set.add package st.installed_roots }
-         in
-         OpamSwitchAction.write_selections st;
          cleanup_dir ();
          drop_states ~gt ~rt ~st ();
        | Some Error `Msg m ->
@@ -810,7 +814,7 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
      end
    | _ -> install_and_drop ());
   let tracking_map = tracking_maps switch atoms in
-  output_artifacts sw bidir tracking_map;
+  output_artifacts prefix bidir tracking_map;
   let build1st =
     if keep_build
     then Some (copy_build_dir bidir switch)
