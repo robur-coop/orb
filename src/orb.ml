@@ -728,9 +728,12 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
      let opam = OpamSwitchState.opam st package in
      drop_states ~gt ~rt ~st ();
      begin
-       match OpamFile.OPAM.extended opam "x-mirage-pre-build" of_opam_value with
-       | None -> install_and_drop ()
-       | Some Ok stuff ->
+       match
+         OpamFile.OPAM.extended opam "x-mirage-configure" of_opam_value,
+         OpamFile.OPAM.extended opam "x-mirage-pre-build" of_opam_value
+       with
+       | None, None -> install_and_drop ()
+       | Some Ok configure, Some Ok pre_build ->
          log "installing dependencies";
          let gt, rt, st = install ~deps_only:true switch atoms in
          log "installed dependencies";
@@ -788,7 +791,7 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
                    cleanup_dir ();
                    exit 1
                  end)
-               stuff;
+               (configure @ pre_build);
              unsetenv "PATH");
          OpamGlobalState.with_ `Lock_none @@ fun gt ->
          OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
@@ -841,8 +844,17 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
          let st = OpamProcess.Job.run job in
          cleanup_dir ();
          drop_states ~gt ~rt ~st ();
-       | Some Error `Msg m ->
+       | Some Error `Msg m, _ ->
+         log "error parsing x-mirage-configure: %s" m;
+         exit 1
+       | _, Some Error `Msg m ->
          log "error parsing x-mirage-pre-build: %s" m;
+         exit 1
+       | None, Some _ ->
+         log "only x-mirage-pre-build, but no x-mirage-configure present";
+         exit 1
+       | Some _, None ->
+         log "only x-mirage-configure, but no x-mirage-pre-build present";
          exit 1
      end
    | _ -> install_and_drop ());
