@@ -655,6 +655,12 @@ let repos_of_opam =
     Ok (List.rev data)
   | _ -> Error (`Msg "expected a list")
 
+let location_of_opam =
+  let open OpamParserTypes.FullPos in
+  function
+  | { pelem = String s ; _ } -> Ok s
+  | _ -> Error (`Msg "expected a string")
+
 (* Main function *)
 let build global_options disable_sandboxing build_options diffoscope keep_build twice
     repos out_dir switch_name epoch skip_system solver_timeout atoms =
@@ -787,6 +793,28 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
          OpamGlobalState.with_ `Lock_none @@ fun gt ->
          OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
          OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
+         let st =
+           match OpamFile.OPAM.extended opam "x-mirage-opam-lock-location" location_of_opam with
+           | None -> st
+           | Some Error `Msg s ->
+             log "error retrieving opam-lock-location %s" s;
+             cleanup_dir ();
+             exit 1
+           | Some Ok path ->
+             let opam_lock =
+               let base = OpamFilename.Base.of_string path in
+               OpamFile.OPAM.read (OpamFile.make (OpamFilename.create dirname base))
+             in
+             let duni_dir = "x-opam-monorepo-duniverse-dirs" in
+             match OpamFile.OPAM.extended opam_lock duni_dir Fun.id with
+             | None ->
+               log "expected duniverse-dirs to be present";
+               cleanup_dir ();
+               exit 1
+             | Some v ->
+               let opam = OpamFile.OPAM.add_extension opam duni_dir v in
+               OpamSwitchState.update_package_metadata package opam st
+         in
          let job =
            let open OpamProcess.Job.Op in
            log "now building";
@@ -804,14 +832,13 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
                  let add_conf conf = OpamPackage.Name.Map.add package.name conf st.conf_files in
                  OpamStd.Option.map_default add_conf st.conf_files conf
                in
-               let _ = OpamSwitchAction.add_to_installed {st with conf_files} ~root:true package in
-               ()
+               OpamSwitchAction.add_to_installed {st with conf_files} ~root:true package
              | Right exn ->
                log "failed to install package: %s" (Printexc.to_string exn);
                cleanup_dir ();
                exit 1
          in
-         OpamProcess.Job.run job;
+         let st = OpamProcess.Job.run job in
          cleanup_dir ();
          drop_states ~gt ~rt ~st ();
        | Some Error `Msg m ->
