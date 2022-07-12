@@ -596,22 +596,16 @@ let of_opam_value =
   (* TODO could use OpamFilter.commands .. .. *)
   let open OpamParserTypes.FullPos in
   let ( let* ) = Result.bind in
-  let rec extract_data = function
-    | { pelem = String s ; _ } -> Ok [ s ]
+  let extract_data = function
+    | { pelem = String s ; _ } -> Ok s
     | { pelem = Ident s ; _ } ->
       if String.equal s "make" then
         match OpamSysPoll.os_family () with
-        | Some "bsd" -> Ok [ "gmake" ]
-        | _ -> Ok [ "make" ]
+        | Some "bsd" -> Ok "gmake"
+        | _ -> Ok "make"
       else
-        Ok [ s ]
-    | { pelem = List { pelem = lbody ; _ } ; _ } ->
-      List.fold_left (fun acc v ->
-          let* acc = acc in
-          let* data = extract_data v in
-          Ok (acc @ data))
-        (Ok []) lbody
-    | _ -> Error (`Msg "expected a string")
+        Ok s
+    | _ -> Error (`Msg "expected a string or identifier")
   in
   function
   | { pelem = List { pelem = lbody ; _ } ; _ } ->
@@ -791,7 +785,7 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
                    cleanup_dir ();
                    exit 1
                  end)
-               (configure @ pre_build);
+               [ configure ; pre_build ];
              unsetenv "PATH");
          OpamGlobalState.with_ `Lock_none @@ fun gt ->
          OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
