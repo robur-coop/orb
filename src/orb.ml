@@ -642,6 +642,77 @@ let location_of_opam =
   | { pelem = String s ; _ } -> Ok s
   | _ -> Error (`Msg "expected a string")
 
+let download_and_extract_job st package dirname =
+  let open OpamProcess.Job.Op in
+  OpamAction.download_package st package @@+ function
+  | Some (_, s) -> Done (Error ("failed to download " ^ s))
+  | None ->
+    let src = OpamSwitchState.source_dir st package in
+    OpamFilename.copy_dir ~src ~dst:dirname;
+    OpamAction.prepare_package_source st package dirname @@| function
+    | None -> Ok ()
+    | Some e -> Error ("failed to extract " ^ Printexc.to_string e)
+
+let execute_commands dirname prefix cmds =
+  OpamFilename.in_dir dirname (fun () ->
+      let path = Unix.getenv "PATH" in
+      let p' = prefix ^ "/bin:" ^ path in
+      log "setting PATH %s" p';
+      Unix.putenv "PATH" p';
+      let r =
+        List.fold_left (fun acc cmd_args ->
+            match acc with
+            | Error e -> Error e
+            | Ok () ->
+              match cmd_args with
+              | cmd :: args ->
+                let cmd = Filename.quote_command cmd args in
+                let r = Sys.command cmd in
+                if r <> 0 then
+                  Error (cmd ^ " exited with " ^ string_of_int r)
+                else
+                  Ok ()
+              | [] -> Ok ())
+          (Ok ()) cmds
+      in
+      unsetenv "PATH";
+      r)
+
+let modify_opam_file st package opam dirname =
+  match OpamFile.OPAM.extended opam "x-mirage-opam-lock-location" location_of_opam with
+  | None -> Ok st
+  | Some Error `Msg s -> Error ("error retrieving opam-lock-location " ^ s);
+  | Some Ok path ->
+    let opam_lock =
+      let base = OpamFilename.Base.of_string path in
+      OpamFile.OPAM.read (OpamFile.make (OpamFilename.create dirname base))
+    in
+    let duni_dir = "x-opam-monorepo-duniverse-dirs" in
+    match OpamFile.OPAM.extended opam_lock duni_dir Fun.id with
+    | None -> Error "expected duniverse-dirs to be present"
+    | Some v ->
+      let opam = OpamFile.OPAM.add_extension opam duni_dir v in
+      Ok (OpamSwitchState.update_package_metadata package opam st)
+
+let build_and_install st dirname package =
+  let open OpamProcess.Job.Op in
+  log "now building %s" (OpamPackage.to_string package);
+  OpamAction.build_package st dirname package @@+ function
+  | Some exn ->
+    Done (Error ("failed to build package " ^ OpamPackage.to_string package ^ ": " ^ Printexc.to_string exn))
+  | None ->
+    log "built %s, now installing" (OpamPackage.to_string package);
+    OpamAction.install_package st ~build_dir:dirname package @@| function
+    | Left conf ->
+      log "installed %s, now registering" (OpamPackage.to_string package);
+      let conf_files =
+        let add_conf conf = OpamPackage.Name.Map.add package.name conf st.conf_files in
+        OpamStd.Option.map_default add_conf st.conf_files conf
+      in
+      Ok (OpamSwitchAction.add_to_installed {st with conf_files} ~root:true package)
+    | Right exn ->
+      Error ("failed to install package " ^ OpamPackage.to_string package ^ ": " ^ Printexc.to_string exn)
+
 (* Main function *)
 let build global_options disable_sandboxing build_options diffoscope keep_build twice
     repos out_dir switch_name epoch skip_system solver_timeout atom =
@@ -693,10 +764,6 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
      - run "make depend" (invokes opam-monorepo) <-- x-mirage-pre-build
      -- OpamAction.(build_package && install_package)
   *)
-  let install_and_drop () =
-    let gt, rt, st = install switch atom in
-    drop_states ~gt ~rt ~st ();
-  in
   OpamGlobalState.with_ `Lock_none @@ fun gt ->
   OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
   OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
@@ -708,31 +775,21 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
       OpamFile.OPAM.extended opam "x-mirage-configure" of_opam_value,
       OpamFile.OPAM.extended opam "x-mirage-pre-build" of_opam_value
     with
-    | None, None -> install_and_drop ()
+    | None, None ->
+      let gt, rt, st = install switch atom in
+      drop_states ~gt ~rt ~st ()
     | Some Ok configure, Some Ok pre_build ->
       log "installing dependencies";
       let gt, rt, st = install ~deps_only:true switch atom in
       log "installed dependencies";
       let dirname = OpamFilename.mk_tmp_dir () in
       let cleanup_dir () = OpamFilename.rmdir dirname in
-      let job =
-        let open OpamProcess.Job.Op in
-        OpamAction.download_package st package @@+ function
-        | Some (_, s) ->
-          log "failed to download sources %s" s;
-          cleanup_dir ();
-          exit 1
-        | None ->
-          let src = OpamSwitchState.source_dir st package in
-          OpamFilename.copy_dir ~src ~dst:dirname;
-          OpamAction.prepare_package_source st package dirname @@| function
-          | None -> ()
-          | Some e ->
-            log "failed to extract sources %s" (Printexc.to_string e);
-            cleanup_dir ();
-            exit 1
-      in
-      OpamProcess.Job.run job;
+      (match OpamProcess.Job.run (download_and_extract_job st package dirname) with
+       | Ok () -> ()
+       | Error msg ->
+         log "%s" msg;
+         cleanup_dir ();
+         exit 1);
       (match OpamFile.OPAM.extended opam "x-mirage-extra-repo" repos_of_opam with
        | None -> ()
        | Some Error `Msg m ->
@@ -750,74 +807,28 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
       OpamGlobalState.with_ `Lock_write @@ fun gt ->
       OpamSwitchCommand.switch `Lock_none gt switch;
       drop_states ~gt ();
-      OpamFilename.in_dir dirname (fun () ->
-          let path = Unix.getenv "PATH" in
-          let p' = prefix ^ "/bin:" ^ path in
-          log "setting PATH %s" p';
-          Unix.putenv "PATH" p';
-          List.iter (fun cmd_args ->
-              let cmd = match cmd_args with
-                | cmd :: args -> Filename.quote_command cmd args
-                | [] -> ""
-              in
-              let r = Sys.command cmd in
-              if r <> 0 then begin
-                log "failed to execute %s: %d" cmd r;
-                unsetenv "PATH";
-                cleanup_dir ();
-                exit 1
-              end)
-            [ configure ; pre_build ];
-          unsetenv "PATH");
+      (match execute_commands dirname prefix [ configure ; pre_build ] with
+       | Ok () -> ();
+       | Error msg -> log "%s" msg; cleanup_dir (); exit 1);
       OpamGlobalState.with_ `Lock_none @@ fun gt ->
       OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
       OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
       let st =
-        match OpamFile.OPAM.extended opam "x-mirage-opam-lock-location" location_of_opam with
-        | None -> st
-        | Some Error `Msg s ->
-          log "error retrieving opam-lock-location %s" s;
+        match modify_opam_file st package opam dirname with
+        | Ok st -> st
+        | Error msg ->
+          log "%s" msg;
           cleanup_dir ();
           exit 1
-        | Some Ok path ->
-          let opam_lock =
-            let base = OpamFilename.Base.of_string path in
-            OpamFile.OPAM.read (OpamFile.make (OpamFilename.create dirname base))
-          in
-          let duni_dir = "x-opam-monorepo-duniverse-dirs" in
-          match OpamFile.OPAM.extended opam_lock duni_dir Fun.id with
-          | None ->
-            log "expected duniverse-dirs to be present";
-            cleanup_dir ();
-            exit 1
-          | Some v ->
-            let opam = OpamFile.OPAM.add_extension opam duni_dir v in
-            OpamSwitchState.update_package_metadata package opam st
       in
-      let job =
-        let open OpamProcess.Job.Op in
-        log "now building";
-        OpamAction.build_package st dirname package @@+ function
-        | Some exn ->
-          log "failed to build package: %s" (Printexc.to_string exn);
+      let st =
+        match OpamProcess.Job.run (build_and_install st dirname package) with
+        | Ok st -> st
+        | Error msg ->
+          log "%s" msg;
           cleanup_dir ();
           exit 1
-        | None ->
-          log "built, now installing";
-          OpamAction.install_package st ~build_dir:dirname package @@| function
-          | Left conf ->
-            log "installed, now registering";
-            let conf_files =
-              let add_conf conf = OpamPackage.Name.Map.add package.name conf st.conf_files in
-              OpamStd.Option.map_default add_conf st.conf_files conf
-            in
-            OpamSwitchAction.add_to_installed {st with conf_files} ~root:true package
-          | Right exn ->
-            log "failed to install package: %s" (Printexc.to_string exn);
-            cleanup_dir ();
-            exit 1
       in
-      let st = OpamProcess.Job.run job in
       cleanup_dir ();
       drop_states ~gt ~rt ~st ();
     | Some Error `Msg m, _ ->
