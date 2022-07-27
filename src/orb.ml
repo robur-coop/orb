@@ -210,7 +210,10 @@ let import_switch skip_system dir sw switch export =
     (OpamConsole.colorise `green (OpamSwitch.to_string switch));
   let roots = st.installed_roots in
   drop_states ~gt ~rt ~st ();
-  roots
+  if OpamPackage.Set.cardinal roots = 1 then
+    OpamPackage.Set.choose roots
+  else
+    invalid_arg "root set is not a singleton"
 
 let install_switch ?repos switch =
   OpamStateConfig.update ~unlock_base:true ();
@@ -224,19 +227,19 @@ let install_switch ?repos switch =
     (OpamConsole.colorise `green (OpamSwitch.to_string switch));
   drop_states ~gt ~rt ~st ()
 
-let install ?deps_only switch atoms =
+let install ?deps_only switch atom =
   log "Install start";
   OpamGlobalState.with_ `Lock_none @@ fun gt ->
   OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
   OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
-  log "Install %s" (OpamFormula.string_of_atoms atoms);
+  log "Install %s" (OpamFormula.string_of_atom atom);
   try
     let add_to_roots = match deps_only with
       | None -> None
       | Some x -> Some (not x)
     in
-    let st = OpamClient.install ?add_to_roots ?deps_only st atoms in
-    log "Installed %s" (OpamFormula.string_of_atoms atoms);
+    let st = OpamClient.install ?add_to_roots ?deps_only st [ atom ] in
+    log "Installed %s" (OpamFormula.string_of_atom atom);
     gt, rt, st
   with
   | OpamStd.Sys.Exit n ->
@@ -246,17 +249,16 @@ let install ?deps_only switch atoms =
     log "Exception while installing: %s" (Printexc.to_string e);
     exit 1
 
-let tracking_maps switch atoms =
+let tracking_maps switch atom =
   OpamGlobalState.with_ `Lock_none @@ fun gt ->
   OpamSwitchState.with_ `Lock_none ~switch gt @@ fun st ->
   log "tracking map got locks";
   let st, packages =
     let p =
-      log "tracking map %d atoms (package set %d - %d packages)"
-        (List.length atoms)
+      log "tracking map atom (package set %d - %d packages)"
         (OpamPackage.Set.cardinal st.installed)
         (OpamPackage.Set.cardinal st.packages);
-      let packages =  OpamFormula.packages_of_atoms st.installed atoms in
+      let packages = OpamFormula.packages_of_atoms st.installed [ atom ] in
       log "tracking map %d packages" (OpamPackage.Set.cardinal packages);
       let ifer = OpamPackage.Set.inter st.installed packages in
       log "tracking map %d packages later" (OpamPackage.Set.cardinal ifer);
@@ -264,8 +266,8 @@ let tracking_maps switch atoms =
     in
     st, p
   in
-  log "tracking map got st and %d packages (%d atoms_or_locals)"
-    (OpamPackage.Set.cardinal packages) (List.length atoms);
+  log "tracking map got st and %d packages"
+    (OpamPackage.Set.cardinal packages);
   let tr =
     OpamPackage.Set.fold (fun pkg acc ->
         let name = OpamPackage.name pkg in
@@ -485,18 +487,6 @@ let compare_builds tracking_map tracking_map' dir build1st build2nd diffoscope =
        | None -> log "no previous build dir available, couldn't run diffoscope"
        | Some build1 -> generate_diffs build1 build2nd final_map dir)
 
-let project_name_from_arg = function
-  | (name, _) :: _ -> OpamPackage.Name.to_string name
-  | _ -> invalid_arg "empty atoms_or_locals"
-
-let project_name_from_dir dir = (* the first <name>.opam-switch *)
-  match
-    List.find_opt (fun t -> OpamFilename.check_suffix t dot_switch)
-      (OpamFilename.files (OpamFilename.Dir.of_string dir))
-  with
-  | None -> failwith "couldn't find switch"
-  | Some t -> OpamFilename.(Base.to_string (basename (chop_extension t)))
-
 let find_env dir =
   let env_file = Filename.concat dir dot_env in
   let env = env_of_string (read_file (OpamFilename.of_string env_file)) in
@@ -548,15 +538,12 @@ let rebuild ~skip_system ~sw ~bidir ~keep_build out =
   let started = Unix.time () in
   let switch = OpamSwitch.of_string sw in
   let switch_in = switch_filename bidir in
-  let packages = import_switch skip_system bidir sw switch (Some switch_in) in
-  let atoms =
-    List.map (fun a -> a.OpamPackage.name, None)
-      (OpamPackage.Set.elements packages)
-  in
-  let tracking_map = tracking_maps switch atoms in
+  let package = import_switch skip_system bidir sw switch (Some switch_in) in
+  let atom = package.OpamPackage.name, None in
+  let tracking_map = tracking_maps switch atom in
   output_artifacts sw out tracking_map;
   let build2nd = if keep_build then copy_build_dir out sw else sw in
-  tracking_map, build2nd, started, packages
+  tracking_map, build2nd, started, package
 
 let add_repo s (name, url) =
   (* todo trust anchors *)
@@ -657,11 +644,8 @@ let location_of_opam =
 
 (* Main function *)
 let build global_options disable_sandboxing build_options diffoscope keep_build twice
-    repos out_dir switch_name epoch skip_system solver_timeout atoms =
+    repos out_dir switch_name epoch skip_system solver_timeout atom =
   let started = Unix.time () in
-  if atoms = [] then
-    exit_error `Bad_arguments
-      "I can't check reproductibility of nothing, by definition, it is";
   strip_env ~preserve:["HOME";"PATH"] ();
   Unix.putenv "PATH" (strip_path ());
   Unix.putenv "SOURCE_DATE_EPOCH"
@@ -670,7 +654,7 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
          | None -> Unix.time ()));
   (match solver_timeout with None -> () | Some x -> Unix.putenv "OPAMSOLVERTIMEOUT" x);
   Unix.putenv "OPAMERRLOGLEN" "0";
-  let name = project_name_from_arg atoms in
+  let name = OpamPackage.Name.to_string (fst atom) in
   Unix.putenv "ORB_BUILDING_PACKAGE" name;
   let opam_root, sw =
     match switch_name with
@@ -710,149 +694,146 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
      -- OpamAction.(build_package && install_package)
   *)
   let install_and_drop () =
-    let gt, rt, st = install switch atoms in
+    let gt, rt, st = install switch atom in
     drop_states ~gt ~rt ~st ();
   in
-  (match atoms with
-   | [ name, _ ] ->
-     OpamGlobalState.with_ `Lock_none @@ fun gt ->
-     OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
-     OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
-     let package = OpamSwitchState.get_package st name in
-     let opam = OpamSwitchState.opam st package in
-     drop_states ~gt ~rt ~st ();
-     begin
-       match
-         OpamFile.OPAM.extended opam "x-mirage-configure" of_opam_value,
-         OpamFile.OPAM.extended opam "x-mirage-pre-build" of_opam_value
-       with
-       | None, None -> install_and_drop ()
-       | Some Ok configure, Some Ok pre_build ->
-         log "installing dependencies";
-         let gt, rt, st = install ~deps_only:true switch atoms in
-         log "installed dependencies";
-         let dirname = OpamFilename.mk_tmp_dir () in
-         let cleanup_dir () = OpamFilename.rmdir dirname in
-         let job =
-           let open OpamProcess.Job.Op in
-           OpamAction.download_package st package @@+ function
-           | Some (_, s) ->
-             log "failed to download sources %s" s;
-             cleanup_dir ();
-             exit 1
-           | None ->
-             let src = OpamSwitchState.source_dir st package in
-             OpamFilename.copy_dir ~src ~dst:dirname;
-             OpamAction.prepare_package_source st package dirname @@| function
-             | None -> ()
-             | Some e ->
-               log "failed to extract sources %s" (Printexc.to_string e);
-               cleanup_dir ();
-               exit 1
-         in
-         OpamProcess.Job.run job;
-         (match OpamFile.OPAM.extended opam "x-mirage-extra-repo" repos_of_opam with
+  OpamGlobalState.with_ `Lock_none @@ fun gt ->
+  OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
+  OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
+  let package = OpamSwitchState.get_package st (fst atom) in
+  let opam = OpamSwitchState.opam st package in
+  drop_states ~gt ~rt ~st ();
+  begin
+    match
+      OpamFile.OPAM.extended opam "x-mirage-configure" of_opam_value,
+      OpamFile.OPAM.extended opam "x-mirage-pre-build" of_opam_value
+    with
+    | None, None -> install_and_drop ()
+    | Some Ok configure, Some Ok pre_build ->
+      log "installing dependencies";
+      let gt, rt, st = install ~deps_only:true switch atom in
+      log "installed dependencies";
+      let dirname = OpamFilename.mk_tmp_dir () in
+      let cleanup_dir () = OpamFilename.rmdir dirname in
+      let job =
+        let open OpamProcess.Job.Op in
+        OpamAction.download_package st package @@+ function
+        | Some (_, s) ->
+          log "failed to download sources %s" s;
+          cleanup_dir ();
+          exit 1
+        | None ->
+          let src = OpamSwitchState.source_dir st package in
+          OpamFilename.copy_dir ~src ~dst:dirname;
+          OpamAction.prepare_package_source st package dirname @@| function
           | None -> ()
-          | Some Error `Msg m ->
-            log "error parsing extra repositories %s" m;
+          | Some e ->
+            log "failed to extract sources %s" (Printexc.to_string e);
             cleanup_dir ();
             exit 1
-          | Some Ok repos ->
-            let repo_names =
-              add_repos (Some (List.map (fun (n, u) -> n ^ ":" ^ u) repos))
-            in
-            OpamSwitchState.update_repositories gt (fun old_repos ->
-                repo_names @ old_repos) switch
-         );
-         drop_states ~gt ~rt ~st ();
-         OpamGlobalState.with_ `Lock_write @@ fun gt ->
-         OpamSwitchCommand.switch `Lock_none gt switch;
-         drop_states ~gt ();
-         OpamFilename.in_dir dirname (fun () ->
-             let path = Unix.getenv "PATH" in
-             let p' = prefix ^ "/bin:" ^ path in
-             log "setting PATH %s" p';
-             Unix.putenv "PATH" p';
-             List.iter (fun cmd_args ->
-                 let cmd = match cmd_args with
-                   | cmd :: args -> Filename.quote_command cmd args
-                   | [] -> ""
-                 in
-                 let r = Sys.command cmd in
-                 if r <> 0 then begin
-                   log "failed to execute %s: %d" cmd r;
-                   unsetenv "PATH";
-                   cleanup_dir ();
-                   exit 1
-                 end)
-               [ configure ; pre_build ];
-             unsetenv "PATH");
-         OpamGlobalState.with_ `Lock_none @@ fun gt ->
-         OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
-         OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
-         let st =
-           match OpamFile.OPAM.extended opam "x-mirage-opam-lock-location" location_of_opam with
-           | None -> st
-           | Some Error `Msg s ->
-             log "error retrieving opam-lock-location %s" s;
-             cleanup_dir ();
-             exit 1
-           | Some Ok path ->
-             let opam_lock =
-               let base = OpamFilename.Base.of_string path in
-               OpamFile.OPAM.read (OpamFile.make (OpamFilename.create dirname base))
-             in
-             let duni_dir = "x-opam-monorepo-duniverse-dirs" in
-             match OpamFile.OPAM.extended opam_lock duni_dir Fun.id with
-             | None ->
-               log "expected duniverse-dirs to be present";
-               cleanup_dir ();
-               exit 1
-             | Some v ->
-               let opam = OpamFile.OPAM.add_extension opam duni_dir v in
-               OpamSwitchState.update_package_metadata package opam st
-         in
-         let job =
-           let open OpamProcess.Job.Op in
-           log "now building";
-           OpamAction.build_package st dirname package @@+ function
-           | Some exn ->
-             log "failed to build package: %s" (Printexc.to_string exn);
-             cleanup_dir ();
-             exit 1
-           | None ->
-             log "built, now installing";
-             OpamAction.install_package st ~build_dir:dirname package @@| function
-             | Left conf ->
-               log "installed, now registering";
-               let conf_files =
-                 let add_conf conf = OpamPackage.Name.Map.add package.name conf st.conf_files in
-                 OpamStd.Option.map_default add_conf st.conf_files conf
-               in
-               OpamSwitchAction.add_to_installed {st with conf_files} ~root:true package
-             | Right exn ->
-               log "failed to install package: %s" (Printexc.to_string exn);
-               cleanup_dir ();
-               exit 1
-         in
-         let st = OpamProcess.Job.run job in
+      in
+      OpamProcess.Job.run job;
+      (match OpamFile.OPAM.extended opam "x-mirage-extra-repo" repos_of_opam with
+       | None -> ()
+       | Some Error `Msg m ->
+         log "error parsing extra repositories %s" m;
          cleanup_dir ();
-         drop_states ~gt ~rt ~st ();
-       | Some Error `Msg m, _ ->
-         log "error parsing x-mirage-configure: %s" m;
          exit 1
-       | _, Some Error `Msg m ->
-         log "error parsing x-mirage-pre-build: %s" m;
-         exit 1
-       | None, Some _ ->
-         log "only x-mirage-pre-build, but no x-mirage-configure present";
-         exit 1
-       | Some _, None ->
-         log "only x-mirage-configure, but no x-mirage-pre-build present";
-         exit 1
-     end
-   | _ -> install_and_drop ());
-  let tracking_map = tracking_maps switch atoms in
+       | Some Ok repos ->
+         let repo_names =
+           add_repos (Some (List.map (fun (n, u) -> n ^ ":" ^ u) repos))
+         in
+         OpamSwitchState.update_repositories gt (fun old_repos ->
+             repo_names @ old_repos) switch
+      );
+      drop_states ~gt ~rt ~st ();
+      OpamGlobalState.with_ `Lock_write @@ fun gt ->
+      OpamSwitchCommand.switch `Lock_none gt switch;
+      drop_states ~gt ();
+      OpamFilename.in_dir dirname (fun () ->
+          let path = Unix.getenv "PATH" in
+          let p' = prefix ^ "/bin:" ^ path in
+          log "setting PATH %s" p';
+          Unix.putenv "PATH" p';
+          List.iter (fun cmd_args ->
+              let cmd = match cmd_args with
+                | cmd :: args -> Filename.quote_command cmd args
+                | [] -> ""
+              in
+              let r = Sys.command cmd in
+              if r <> 0 then begin
+                log "failed to execute %s: %d" cmd r;
+                unsetenv "PATH";
+                cleanup_dir ();
+                exit 1
+              end)
+            [ configure ; pre_build ];
+          unsetenv "PATH");
+      OpamGlobalState.with_ `Lock_none @@ fun gt ->
+      OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
+      OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
+      let st =
+        match OpamFile.OPAM.extended opam "x-mirage-opam-lock-location" location_of_opam with
+        | None -> st
+        | Some Error `Msg s ->
+          log "error retrieving opam-lock-location %s" s;
+          cleanup_dir ();
+          exit 1
+        | Some Ok path ->
+          let opam_lock =
+            let base = OpamFilename.Base.of_string path in
+            OpamFile.OPAM.read (OpamFile.make (OpamFilename.create dirname base))
+          in
+          let duni_dir = "x-opam-monorepo-duniverse-dirs" in
+          match OpamFile.OPAM.extended opam_lock duni_dir Fun.id with
+          | None ->
+            log "expected duniverse-dirs to be present";
+            cleanup_dir ();
+            exit 1
+          | Some v ->
+            let opam = OpamFile.OPAM.add_extension opam duni_dir v in
+            OpamSwitchState.update_package_metadata package opam st
+      in
+      let job =
+        let open OpamProcess.Job.Op in
+        log "now building";
+        OpamAction.build_package st dirname package @@+ function
+        | Some exn ->
+          log "failed to build package: %s" (Printexc.to_string exn);
+          cleanup_dir ();
+          exit 1
+        | None ->
+          log "built, now installing";
+          OpamAction.install_package st ~build_dir:dirname package @@| function
+          | Left conf ->
+            log "installed, now registering";
+            let conf_files =
+              let add_conf conf = OpamPackage.Name.Map.add package.name conf st.conf_files in
+              OpamStd.Option.map_default add_conf st.conf_files conf
+            in
+            OpamSwitchAction.add_to_installed {st with conf_files} ~root:true package
+          | Right exn ->
+            log "failed to install package: %s" (Printexc.to_string exn);
+            cleanup_dir ();
+            exit 1
+      in
+      let st = OpamProcess.Job.run job in
+      cleanup_dir ();
+      drop_states ~gt ~rt ~st ();
+    | Some Error `Msg m, _ ->
+      log "error parsing x-mirage-configure: %s" m;
+      exit 1
+    | _, Some Error `Msg m ->
+      log "error parsing x-mirage-pre-build: %s" m;
+      exit 1
+    | None, Some _ ->
+      log "only x-mirage-pre-build, but no x-mirage-configure present";
+      exit 1
+    | Some _, None ->
+      log "only x-mirage-configure, but no x-mirage-pre-build present";
+      exit 1
+  end;
+  let tracking_map = tracking_maps switch atom in
   output_artifacts prefix bidir tracking_map;
   let build1st =
     if keep_build
@@ -896,14 +877,13 @@ let rebuild global_options disable_sandboxing build_options diffoscope keep_buil
       Unix.putenv "PREFIX" (sw ^ "/_opam");
     if List.assoc_opt "PKG_CONFIG_PATH" env = None then
       Unix.putenv "PKG_CONFIG_PATH" (sw ^ "/_opam/lib/pkgconfig");
-    let tracking_map_2nd, build2nd, started', packages =
+    let tracking_map_2nd, build2nd, started', package =
       rebuild ~skip_system ~sw ~bidir:dir ~keep_build out
     in
-    let tracking_map_1st = OpamPackage.Set.fold (fun pkg acc ->
-        match read_tracking_map old (OpamPackage.Name.to_string pkg.OpamPackage.name) with
-        | None -> log "no tracking map for %s found" (OpamPackage.Name.to_string pkg.OpamPackage.name); acc
-        | Some tm -> OpamPackage.Map.add pkg tm acc)
-        packages OpamPackage.Map.empty
+    let tracking_map_1st =
+      match read_tracking_map old (OpamPackage.Name.to_string package.OpamPackage.name) with
+      | None -> log "no tracking map for %s found" (OpamPackage.Name.to_string package.OpamPackage.name); OpamPackage.Map.empty
+      | Some tm -> OpamPackage.Map.singleton package tm
     in
     let build1st = find_build_dir old in
     log "comparing with old build dir %s" (match build1st with None -> "no" | Some x -> x);
@@ -976,11 +956,18 @@ let build_cmd =
       "use the provided solver timeout instead of the default (sets OPAMSOLVERTIMEOUT)"
       Arg.(some string) None
   in
+  let atom =
+    let info_ =
+      let doc = "Package name, with an optional version or constraint, e.g `pkg', `pkg.1.0' or `pkg>=0.5'." in
+      Arg.info ~docv:"PACKAGE" ~doc []
+    in
+    Arg.(required & pos 0 (some atom) None & info_)
+  in
   let term =
     Term.((const build $ global_options cli $ disable_sandboxing $ build_options cli
            $ diffoscope $ keep_build $ twice
            $ repos $ out_dir $ switch_name $ source_date_epoch $ skip_system
-           $ solver_timeout $ atom_list))
+           $ solver_timeout $ atom))
   and info = Cmd.info "build" ~man ~doc
   in
   Cmd.v info term
