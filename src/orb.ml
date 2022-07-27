@@ -249,7 +249,7 @@ let install ?deps_only switch atom =
     log "Exception while installing: %s" (Printexc.to_string e);
     exit 1
 
-let tracking_maps switch atom =
+let tracking_map switch atom =
   OpamGlobalState.with_ `Lock_none @@ fun gt ->
   OpamSwitchState.with_ `Lock_none ~switch gt @@ fun st ->
   log "tracking map got locks";
@@ -540,7 +540,7 @@ let rebuild ~skip_system ~sw ~bidir ~keep_build out =
   let switch_in = switch_filename bidir in
   let package = import_switch skip_system bidir sw switch (Some switch_in) in
   let atom = package.OpamPackage.name, None in
-  let tracking_map = tracking_maps switch atom in
+  let tracking_map = tracking_map switch atom in
   output_artifacts sw out tracking_map;
   let build2nd = if keep_build then copy_build_dir out sw else sw in
   tracking_map, build2nd, started, package
@@ -833,7 +833,7 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
       log "only x-mirage-configure, but no x-mirage-pre-build present";
       exit 1
   end;
-  let tracking_map = tracking_maps switch atom in
+  let tracking_map = tracking_map switch atom in
   output_artifacts prefix bidir tracking_map;
   let build1st =
     if keep_build
@@ -852,7 +852,7 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
       else
         bidir ^ "2"
     in
-    print_endline ("second run, outdir is " ^ outdir);
+    log "second run, outdir is %s" outdir;
     let tracking_map', build2nd, started', _ =
       rebuild ~skip_system ~sw ~bidir ~keep_build outdir
     in
