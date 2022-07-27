@@ -688,10 +688,35 @@ let modify_opam_file st package opam dirname =
       OpamFile.OPAM.read (OpamFile.make (OpamFilename.create dirname base))
     in
     let duni_dir = "x-opam-monorepo-duniverse-dirs" in
+    let build_ext = "x-orb-build" and install_ext = "x-orb-install" in
     match OpamFile.OPAM.extended opam_lock duni_dir Fun.id with
     | None -> Error "expected duniverse-dirs to be present"
     | Some v ->
+      (* move build and install instructions to allow switch import *)
+      let build = OpamFile.OPAM.build opam
+      and install = OpamFile.OPAM.install opam
+      in
+      let opam =
+        OpamFile.OPAM.with_build [] opam |> OpamFile.OPAM.with_install []
+      in
+      let with_pos pelem = OpamParserTypes.FullPos.{ pelem ; pos = v.pos } in
+      let list pelem =
+        with_pos (OpamParserTypes.FullPos.List (with_pos pelem))
+      in
+      let cmd_to_v = function
+        | _, Some _ -> log "couldn't convert command with filter" ; exit 1
+        | args, None ->
+          let convert_arg = function
+            | _, Some _ -> log "couldn't convert arg with filter" ; exit 1
+            | OpamTypes.CString s, _ -> with_pos (OpamParserTypes.FullPos.String s)
+            | CIdent s, _ -> with_pos (OpamParserTypes.FullPos.Ident s)
+          in
+          list (List.map convert_arg args)
+      in
+      let cmds_to_v c = list (List.map cmd_to_v c) in
       let opam = OpamFile.OPAM.add_extension opam duni_dir v in
+      let opam = OpamFile.OPAM.add_extension opam build_ext (cmds_to_v build) in
+      let opam = OpamFile.OPAM.add_extension opam install_ext (cmds_to_v install) in
       Ok (OpamSwitchState.update_package_metadata package opam st)
 
 let build_and_install st dirname package =
