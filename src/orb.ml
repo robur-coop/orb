@@ -674,72 +674,74 @@ let rebuild ~skip_system ~sw ~bidir ~keep_build out =
     OpamPackage.Name.Map.find (OpamPackage.name package)
       sw_exp.OpamFile.SwitchExport.overlays
   in
-  let build_install, switch_in =
+  let monorepo, switch_in =
     match OpamFile.OPAM.extended opam opam_monorepo_duni Fun.id with
-    | None -> None, switch_in
+    | None -> false, switch_in
     | Some _ ->
-      let opam' =
-        OpamFile.OPAM.with_build [] opam |> OpamFile.OPAM.with_install []
-      in
       let overlays =
-        OpamPackage.Name.Map.add (OpamPackage.name package) opam'
+        OpamPackage.Name.Map.remove (OpamPackage.name package)
           sw_exp.OpamFile.SwitchExport.overlays
       in
-      let sw_exp = { sw_exp with overlays } in
+      let selections =
+        let sel = sw_exp.OpamFile.SwitchExport.selections in
+        { sel with
+          sel_installed = OpamPackage.Set.remove package sel.sel_installed ;
+          sel_roots = OpamPackage.Set.empty }
+      in
+      let sw_exp = { sw_exp with overlays ; selections } in
       let tmp = OpamFile.make (OpamFilename.of_string (Filename.temp_file "orb" "export")) in
       OpamFile.SwitchExport.write tmp sw_exp;
-      Some (OpamFile.OPAM.build opam, OpamFile.OPAM.install opam), tmp
+      true, tmp
   in
   import_switch skip_system out sw switch (Some switch_in);
-  (match build_install with
-   | Some (build, install) ->
-     log "extracting sources";
-     OpamGlobalState.with_ `Lock_none @@ fun gt ->
-     OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
-     OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
-     let dirname = OpamFilename.mk_tmp_dir () in
-     let cleanup_dir () = OpamFilename.rmdir dirname in
-     (match OpamProcess.Job.run (download_and_extract_job st package dirname) with
-      | Ok () -> ()
-      | Error msg ->
-        log "%s" msg;
-        cleanup_dir ();
-        exit 1);
-     let opam = OpamSwitchState.opam st package in
-     (match OpamFile.OPAM.extended opam opam_monorepo_duni duniverse_dirs with
-      | None -> log "expected duniverse-dirs to be present" ; cleanup_dir () ; exit 1
-      | Some Error `Msg msg -> log "failed to parse duniverse-dirs %s" msg ; cleanup_dir () ; exit 1
-      | Some Ok v ->
-        log "found %d duniverse dirs" (List.length v);
-        let prefix =
-          match OpamFile.OPAM.extended opam mirage_opam_lock location_of_opam with
-          | None -> ""
-          | Some Error `Msg s -> log "error retrieving opam-lock-location %s" s; ""
-          | Some Ok path ->
-            match List.rev (String.split_on_char '/' path) with
-            | _file :: _mirage :: tl -> String.concat "/" (List.rev tl) ^ "/"
-            | _ -> ""
-        in
-        let duni_dir = prefix ^ "duniverse" in
-        OpamFilename.in_dir dirname (fun () ->
-            let dir = OpamFilename.Dir.of_string duni_dir in
-            OpamFilename.mkdir dir;
-            OpamFilename.write
-              OpamFilename.(create dir (Base.of_string "dune"))
-              "(vendored_dirs *)");
-        let jobs = !OpamStateConfig.r.dl_jobs in
-        let cache_dir =
-          OpamRepositoryPath.download_cache gt.OpamStateTypes.root
-        in
-        let pull_one (url, dir, hashes) =
-          let open OpamProcess.Job.Op in
-          let out = OpamFilename.Dir.(of_string (to_string dirname ^ "/" ^ duni_dir ^ "/" ^ dir)) in
-          OpamRepository.pull_tree ~cache_dir dir out hashes [ url ] @@| function
-          | Result _ | Up_to_date _ -> Ok ()
-          | Not_available (_, long_msg) ->
-            Error ("failed to download " ^ OpamUrl.to_string url ^ " into " ^ dir ^ ": " ^ long_msg)
-        in
-        let rs = OpamParallel.map ~jobs ~command:pull_one v in
+  (if monorepo then begin
+      log "extracting sources";
+      OpamGlobalState.with_ `Lock_none @@ fun gt ->
+      OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
+      OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
+      let dirname = OpamFilename.mk_tmp_dir () in
+      let cleanup_dir () = OpamFilename.rmdir dirname in
+      (match OpamProcess.Job.run (download_and_extract_job st package dirname) with
+       | Ok () -> ()
+       | Error msg ->
+         log "%s" msg;
+         cleanup_dir ();
+         exit 1);
+      let opam = OpamSwitchState.opam st package in
+      (match OpamFile.OPAM.extended opam opam_monorepo_duni duniverse_dirs with
+       | None -> log "expected duniverse-dirs to be present" ; cleanup_dir () ; exit 1
+       | Some Error `Msg msg -> log "failed to parse duniverse-dirs %s" msg ; cleanup_dir () ; exit 1
+       | Some Ok v ->
+         log "found %d duniverse dirs" (List.length v);
+         let prefix =
+           match OpamFile.OPAM.extended opam mirage_opam_lock location_of_opam with
+           | None -> ""
+           | Some Error `Msg s -> log "error retrieving opam-lock-location %s" s; ""
+           | Some Ok path ->
+             match List.rev (String.split_on_char '/' path) with
+             | _file :: _mirage :: tl -> String.concat "/" (List.rev tl) ^ "/"
+             | _ -> ""
+         in
+         let duni_dir = prefix ^ "duniverse" in
+         OpamFilename.in_dir dirname (fun () ->
+             let dir = OpamFilename.Dir.of_string duni_dir in
+             OpamFilename.mkdir dir;
+             OpamFilename.write
+               OpamFilename.(create dir (Base.of_string "dune"))
+               "(vendored_dirs *)");
+         let jobs = !OpamStateConfig.r.dl_jobs in
+         let cache_dir =
+           OpamRepositoryPath.download_cache gt.OpamStateTypes.root
+         in
+         let pull_one (url, dir, hashes) =
+           let open OpamProcess.Job.Op in
+           let out = OpamFilename.Dir.(of_string (to_string dirname ^ "/" ^ duni_dir ^ "/" ^ dir)) in
+           OpamRepository.pull_tree ~cache_dir dir out hashes [ url ] @@| function
+           | Result _ | Up_to_date _ -> Ok ()
+           | Not_available (_, long_msg) ->
+             Error ("failed to download " ^ OpamUrl.to_string url ^ " into " ^ dir ^ ": " ^ long_msg)
+         in
+         let rs = OpamParallel.map ~jobs ~command:pull_one v in
          match
            List.fold_left (fun acc r -> match acc, r with
                | Ok (), Ok () -> Ok ()
@@ -751,35 +753,31 @@ let rebuild ~skip_system ~sw ~bidir ~keep_build out =
            log "downloaded %d tarballs" (List.length rs);
          | Error e ->
            log "download error %s" e; cleanup_dir (); exit 1);
-     let st =
-       let opam =
-         OpamFile.OPAM.with_build build opam |> OpamFile.OPAM.with_install install
-       in
-       OpamSwitchState.update_package_metadata package opam st
-     in
-     drop_states ~gt ~rt ~st ();
-     (match
-        OpamFile.OPAM.extended opam mirage_configure of_opam_value
-      with
-      | None -> log "failed to find %s" mirage_configure; cleanup_dir (); exit 1
-      | Some Error `Msg msg ->
-        log "failed to parse %s: %s" mirage_configure msg; cleanup_dir (); exit 1
-      | Some Ok configure ->
-        (match execute_commands dirname (Unix.getenv "PREFIX") [ configure ] with
-         | Ok () -> ();
-         | Error msg -> log "%s" msg; cleanup_dir (); exit 1));
-     OpamGlobalState.with_ `Lock_none @@ fun gt ->
-     OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
-     OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
-     (* may need to remove the old package (and preserve the opam file?) *)
-     let st =
-       match OpamProcess.Job.run (build_and_install st dirname package) with
-       | Ok st -> st
-       | Error msg -> log "%s" msg; cleanup_dir (); exit 1
-     in
-     cleanup_dir ();
-     drop_states ~gt ~rt ~st ()
-   | None -> ());
+      let st =
+        OpamSwitchState.update_package_metadata package opam st
+      in
+      drop_states ~gt ~rt ~st ();
+      (match
+         OpamFile.OPAM.extended opam mirage_configure of_opam_value
+       with
+       | None -> log "failed to find %s" mirage_configure; cleanup_dir (); exit 1
+       | Some Error `Msg msg ->
+         log "failed to parse %s: %s" mirage_configure msg; cleanup_dir (); exit 1
+       | Some Ok configure ->
+         (match execute_commands dirname (Unix.getenv "PREFIX") [ configure ] with
+          | Ok () -> ();
+          | Error msg -> log "%s" msg; cleanup_dir (); exit 1));
+      OpamGlobalState.with_ `Lock_none @@ fun gt ->
+      OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
+      OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
+      let st =
+        match OpamProcess.Job.run (build_and_install st dirname package) with
+        | Ok st -> st
+        | Error msg -> log "%s" msg; cleanup_dir (); exit 1
+      in
+      cleanup_dir ();
+      drop_states ~gt ~rt ~st ()
+    end);
   let atom = package.OpamPackage.name, None in
   let tracking_map = tracking_map switch atom in
   output_artifacts sw out tracking_map;
