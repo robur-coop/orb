@@ -710,7 +710,6 @@ let rebuild ~skip_system ~sw ~bidir ~keep_build out =
          log "%s" msg;
          cleanup_dir ();
          exit 1);
-      let opam = OpamSwitchState.opam st package in
       (match OpamFile.OPAM.extended opam opam_monorepo_duni duniverse_dirs with
        | None -> log "expected duniverse-dirs to be present" ; cleanup_dir () ; exit 1
        | Some Error `Msg msg -> log "failed to parse duniverse-dirs %s" msg ; cleanup_dir () ; exit 1
