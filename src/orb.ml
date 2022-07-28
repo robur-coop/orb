@@ -62,12 +62,14 @@ let dot_diffoscope = ".diffoscope"
 
 (* custom opam extensions *)
 let opam_monorepo_duni = "x-opam-monorepo-duniverse-dirs"
-let orb_build = "x-orb-build"
-let orb_install = "x-orb-install"
 let mirage_opam_lock = "x-mirage-opam-lock-location"
 let mirage_configure = "x-mirage-configure"
 let mirage_pre_build = "x-mirage-pre-build"
 let mirage_extra_repo = "x-mirage-extra-repo"
+
+let custom_env_keys = [
+  "OS" ; "OS_DISTRIBUTION" ; "OS_VERSION" ; "OS_FAMILY" ; "SWITCH_PATH"
+]
 
 let custom_env s = [
   "OS", OpamSysPoll.os ();
@@ -218,16 +220,7 @@ let import_switch skip_system dir sw switch export =
   let st = OpamSwitchCommand.import st export in
   log "Switch %s imported!"
     (OpamConsole.colorise `green (OpamSwitch.to_string switch));
-  let roots = st.installed_roots in
-  drop_states ~gt ~rt ~st ();
-  if OpamPackage.Set.cardinal roots = 1 then
-    let package = OpamPackage.Set.choose roots in
-    let opam = OpamSwitchState.opam st package in
-    match OpamFile.OPAM.extended opam orb_build Fun.id with
-    | None -> false, package
-    | Some _ -> true, package
-  else
-    invalid_arg "root set is not a singleton"
+  drop_states ~gt ~rt ~st ()
 
 let install_switch ?repos switch =
   OpamStateConfig.update ~unlock_base:true ();
@@ -501,22 +494,9 @@ let compare_builds tracking_map tracking_map' dir build1st build2nd diffoscope =
        | None -> log "no previous build dir available, couldn't run diffoscope"
        | Some build1 -> generate_diffs build1 build2nd final_map dir)
 
-let find_env dir =
+let read_env dir =
   let env_file = Filename.concat dir dot_env in
-  let env = env_of_string (read_file (OpamFilename.of_string env_file)) in
-  (* need to set HOME and PATH and SOURCE_DATE_EPOCH, since this env is captured by opam *)
-  (if env_matches env then
-     log "environment matches, using it"
-   else
-     failwith "environment does not match");
-  let started =
-    let full = Unix.readlink dir in
-    let xs = String.split_on_char '/' full in
-    match List.rev xs with
-    | date :: _ -> date
-    | _ -> invalid_arg "couldn't determine name and date"
-  in
-  started, env
+  env_of_string (read_file (OpamFilename.of_string env_file))
 
 external unsetenv : string -> unit = "orb_unsetenv"
 
@@ -600,38 +580,6 @@ let duniverse_dirs =
     Ok (List.rev data)
   | _ -> Error (`Msg "expected a list or a nested list")
 
-let build_install_in_opam st package opam =
-  (* move build and install instructions back *)
-  let extract_cmd =
-    let open OpamParserTypes.FullPos in
-    function
-    | { pelem = List { pelem = args ; _ } ; _ } ->
-      let extract_arg = function
-        | { pelem = String s ; _ } -> OpamTypes.CString s, None
-        | { pelem = Ident s ; _ } -> OpamTypes.CIdent s, None
-        | _ -> log "couldn't convert arg" ; exit 1
-      in
-      List.map extract_arg args, None
-    | _ -> log "couldn't convert command" ; exit 1
-  in
-  let extract_cmds =
-    let open OpamParserTypes.FullPos in
-    function
-    | { pelem = List { pelem = cmds ; _ } ; _ } ->
-      List.map extract_cmd cmds
-    | _ -> log "couldn't convert cmds" ; exit 1
-  in
-  match
-    OpamFile.OPAM.extended opam orb_build extract_cmds,
-    OpamFile.OPAM.extended opam orb_install extract_cmds
-  with
-  | Some build, Some install ->
-    let opam =
-      OpamFile.OPAM.with_build build opam |> OpamFile.OPAM.with_install install
-    in
-    OpamSwitchState.update_package_metadata package opam st
-  | _ -> log "failed to extract build or install" ; exit 1
-
 let execute_commands dirname prefix cmds =
   OpamFilename.in_dir dirname (fun () ->
       let path = Unix.getenv "PATH" in
@@ -682,7 +630,7 @@ let of_opam_value =
         (Ok []) lbody
     in
     Ok (List.rev data)
-  | _ -> Error (`Msg "expected a list or a nested list")
+  | _ -> Error (`Msg "expected a list")
 
 let build_and_install st dirname package =
   let open OpamProcess.Job.Op in
@@ -703,51 +651,95 @@ let build_and_install st dirname package =
     | Right exn ->
       Error ("failed to install package " ^ OpamPackage.to_string package ^ ": " ^ Printexc.to_string exn)
 
+let location_of_opam =
+  let open OpamParserTypes.FullPos in
+  function
+  | { pelem = String s ; _ } -> Ok s
+  | _ -> Error (`Msg "expected a string")
+
 let rebuild ~skip_system ~sw ~bidir ~keep_build out =
   let started = Unix.time () in
   let switch = OpamSwitch.of_string sw in
   let switch_in = switch_filename bidir in
-  let monorepo, package =
-    import_switch skip_system bidir sw switch (Some switch_in)
+  let sw_exp = OpamFile.SwitchExport.read switch_in in
+  let package =
+    let p = sw_exp.OpamFile.SwitchExport.selections.OpamTypes.sel_roots in
+    if OpamPackage.Set.cardinal p = 1 then
+      OpamPackage.Set.choose p
+    else begin
+      log "multiple roots, unclear what to do"; exit 1
+    end
   in
-  (if monorepo then begin
-      log "extracting sources";
-      OpamGlobalState.with_ `Lock_none @@ fun gt ->
-      OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
-      OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
-      let dirname = OpamFilename.mk_tmp_dir () in
-      let cleanup_dir () = OpamFilename.rmdir dirname in
-      (match OpamProcess.Job.run (download_and_extract_job st package dirname) with
-       | Ok () -> ()
-       | Error msg ->
-         log "%s" msg;
-         cleanup_dir ();
-         exit 1);
-      let opam = OpamSwitchState.opam st package in
-      (match OpamFile.OPAM.extended opam opam_monorepo_duni duniverse_dirs with
-       | None -> log "expected duniverse-dirs to be present" ; cleanup_dir () ; exit 1
-       | Some Error `Msg msg -> log "failed to parse duniverse-dirs %s" msg ; cleanup_dir () ; exit 1
-       | Some Ok v ->
-         let duni_dir = "duniverse" in
-         OpamFilename.in_dir dirname (fun () ->
-             let dir = OpamFilename.Dir.of_string duni_dir in
-             OpamFilename.mkdir dir;
-             OpamFilename.write
-               OpamFilename.(create dir (Base.of_string "dune"))
-               "(vendored_dirs *)");
-         let jobs = !OpamStateConfig.r.dl_jobs in
-         let cache_dir =
-           OpamRepositoryPath.download_cache gt.OpamStateTypes.root
-         in
-         let pull_one (url, dir, hashes) =
-           let open OpamProcess.Job.Op in
-           let out = OpamFilename.Dir.of_string (duni_dir ^ "/" ^ dir) in
-           OpamRepository.pull_tree ~cache_dir dir out hashes [ url ] @@| function
-           | Result _ | Up_to_date _ -> Ok ()
-           | Not_available (_, long_msg) ->
-             Error (`Msg (Printf.sprintf "Failed to download %s %s: %s" (OpamUrl.to_string url) dir long_msg))
-         in
-         let rs = OpamParallel.map ~jobs ~command:pull_one v in
+  let opam =
+    OpamPackage.Name.Map.find (OpamPackage.name package)
+      sw_exp.OpamFile.SwitchExport.overlays
+  in
+  let build_install, switch_in =
+    match OpamFile.OPAM.extended opam opam_monorepo_duni Fun.id with
+    | None -> None, switch_in
+    | Some _ ->
+      let opam' =
+        OpamFile.OPAM.with_build [] opam |> OpamFile.OPAM.with_install []
+      in
+      let overlays =
+        OpamPackage.Name.Map.add (OpamPackage.name package) opam'
+          sw_exp.OpamFile.SwitchExport.overlays
+      in
+      let sw_exp = { sw_exp with overlays } in
+      let tmp = OpamFile.make (OpamFilename.of_string (Filename.temp_file "orb" "export")) in
+      OpamFile.SwitchExport.write tmp sw_exp;
+      Some (OpamFile.OPAM.build opam, OpamFile.OPAM.install opam), tmp
+  in
+  import_switch skip_system out sw switch (Some switch_in);
+  (match build_install with
+   | Some (build, install) ->
+     log "extracting sources";
+     OpamGlobalState.with_ `Lock_none @@ fun gt ->
+     OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
+     OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
+     let dirname = OpamFilename.mk_tmp_dir () in
+     let cleanup_dir () = OpamFilename.rmdir dirname in
+     (match OpamProcess.Job.run (download_and_extract_job st package dirname) with
+      | Ok () -> ()
+      | Error msg ->
+        log "%s" msg;
+        cleanup_dir ();
+        exit 1);
+     let opam = OpamSwitchState.opam st package in
+     (match OpamFile.OPAM.extended opam opam_monorepo_duni duniverse_dirs with
+      | None -> log "expected duniverse-dirs to be present" ; cleanup_dir () ; exit 1
+      | Some Error `Msg msg -> log "failed to parse duniverse-dirs %s" msg ; cleanup_dir () ; exit 1
+      | Some Ok v ->
+        log "found %d duniverse dirs" (List.length v);
+        let prefix =
+          match OpamFile.OPAM.extended opam mirage_opam_lock location_of_opam with
+          | None -> ""
+          | Some Error `Msg s -> log "error retrieving opam-lock-location %s" s; ""
+          | Some Ok path ->
+            match List.rev (String.split_on_char '/' path) with
+            | _file :: _mirage :: tl -> String.concat "/" (List.rev tl) ^ "/"
+            | _ -> ""
+        in
+        let duni_dir = prefix ^ "duniverse" in
+        OpamFilename.in_dir dirname (fun () ->
+            let dir = OpamFilename.Dir.of_string duni_dir in
+            OpamFilename.mkdir dir;
+            OpamFilename.write
+              OpamFilename.(create dir (Base.of_string "dune"))
+              "(vendored_dirs *)");
+        let jobs = !OpamStateConfig.r.dl_jobs in
+        let cache_dir =
+          OpamRepositoryPath.download_cache gt.OpamStateTypes.root
+        in
+        let pull_one (url, dir, hashes) =
+          let open OpamProcess.Job.Op in
+          let out = OpamFilename.Dir.(of_string (to_string dirname ^ "/" ^ duni_dir ^ "/" ^ dir)) in
+          OpamRepository.pull_tree ~cache_dir dir out hashes [ url ] @@| function
+          | Result _ | Up_to_date _ -> Ok ()
+          | Not_available (_, long_msg) ->
+            Error ("failed to download " ^ OpamUrl.to_string url ^ " into " ^ dir ^ ": " ^ long_msg)
+        in
+        let rs = OpamParallel.map ~jobs ~command:pull_one v in
          match
            List.fold_left (fun acc r -> match acc, r with
                | Ok (), Ok () -> Ok ()
@@ -755,32 +747,39 @@ let rebuild ~skip_system ~sw ~bidir ~keep_build out =
                | _, (Error _ as e) -> e)
              (Ok ()) rs
          with
-         | Ok () -> ()
-         | Error `Msg e ->
+         | Ok () ->
+           log "downloaded %d tarballs" (List.length rs);
+         | Error e ->
            log "download error %s" e; cleanup_dir (); exit 1);
-      let st = build_install_in_opam st package opam in
-      drop_states ~gt ~rt ~st ();
-      (match
-         OpamFile.OPAM.extended opam mirage_configure of_opam_value
-       with
-       | None -> log "failed to find %s" mirage_configure; cleanup_dir (); exit 1
-       | Some Error `Msg msg ->
-         log "failed to parse %s: %s" mirage_configure msg; cleanup_dir (); exit 1
-       | Some Ok configure ->
-         (match execute_commands dirname (Unix.getenv "PREFIX") [ configure ] with
-          | Ok () -> ();
-          | Error msg -> log "%s" msg; cleanup_dir (); exit 1));
-      OpamGlobalState.with_ `Lock_none @@ fun gt ->
-      OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
-      OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
-      let st =
-        match OpamProcess.Job.run (build_and_install st dirname package) with
-        | Ok st -> st
-        | Error msg -> log "%s" msg; cleanup_dir (); exit 1
-      in
-      cleanup_dir ();
-      drop_states ~gt ~rt ~st ()
-    end);
+     let st =
+       let opam =
+         OpamFile.OPAM.with_build build opam |> OpamFile.OPAM.with_install install
+       in
+       OpamSwitchState.update_package_metadata package opam st
+     in
+     drop_states ~gt ~rt ~st ();
+     (match
+        OpamFile.OPAM.extended opam mirage_configure of_opam_value
+      with
+      | None -> log "failed to find %s" mirage_configure; cleanup_dir (); exit 1
+      | Some Error `Msg msg ->
+        log "failed to parse %s: %s" mirage_configure msg; cleanup_dir (); exit 1
+      | Some Ok configure ->
+        (match execute_commands dirname (Unix.getenv "PREFIX") [ configure ] with
+         | Ok () -> ();
+         | Error msg -> log "%s" msg; cleanup_dir (); exit 1));
+     OpamGlobalState.with_ `Lock_none @@ fun gt ->
+     OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
+     OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
+     (* may need to remove the old package (and preserve the opam file?) *)
+     let st =
+       match OpamProcess.Job.run (build_and_install st dirname package) with
+       | Ok st -> st
+       | Error msg -> log "%s" msg; cleanup_dir (); exit 1
+     in
+     cleanup_dir ();
+     drop_states ~gt ~rt ~st ()
+   | None -> ());
   let atom = package.OpamPackage.name, None in
   let tracking_map = tracking_map switch atom in
   output_artifacts sw out tracking_map;
@@ -851,12 +850,6 @@ let repos_of_opam =
     Ok (List.rev data)
   | _ -> Error (`Msg "expected a list")
 
-let location_of_opam =
-  let open OpamParserTypes.FullPos in
-  function
-  | { pelem = String s ; _ } -> Ok s
-  | _ -> Error (`Msg "expected a string")
-
 let modify_opam_file st package opam dirname =
   match OpamFile.OPAM.extended opam mirage_opam_lock location_of_opam with
   | None -> Ok st
@@ -869,31 +862,7 @@ let modify_opam_file st package opam dirname =
     match OpamFile.OPAM.extended opam_lock opam_monorepo_duni Fun.id with
     | None -> Error "expected duniverse-dirs to be present"
     | Some v ->
-      (* move build and install instructions to allow switch import *)
-      let build = OpamFile.OPAM.build opam
-      and install = OpamFile.OPAM.install opam
-      in
-      let opam =
-        OpamFile.OPAM.with_build [] opam |> OpamFile.OPAM.with_install []
-      in
-      let with_pos pelem = OpamParserTypes.FullPos.{ pelem ; pos = v.pos } in
-      let list pelem =
-        with_pos (OpamParserTypes.FullPos.List (with_pos pelem))
-      in
-      let cmd_to_v = function
-        | _, Some _ -> log "couldn't convert command with filter" ; exit 1
-        | args, None ->
-          let convert_arg = function
-            | _, Some _ -> log "couldn't convert arg with filter" ; exit 1
-            | OpamTypes.CString s, _ -> with_pos (OpamParserTypes.FullPos.String s)
-            | CIdent s, _ -> with_pos (OpamParserTypes.FullPos.Ident s)
-          in
-          list (List.map convert_arg args)
-      in
-      let cmds_to_v c = list (List.map cmd_to_v c) in
       let opam = OpamFile.OPAM.add_extension opam opam_monorepo_duni v in
-      let opam = OpamFile.OPAM.add_extension opam orb_build (cmds_to_v build) in
-      let opam = OpamFile.OPAM.add_extension opam orb_install (cmds_to_v install) in
       Ok (OpamSwitchState.update_package_metadata package opam st)
 
 (* Main function *)
@@ -1046,21 +1015,32 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
 
 let rebuild global_options disable_sandboxing build_options diffoscope keep_build skip_system dir out_dir =
   if dir = "" then failwith "require build info directory" else begin
-    strip_env ();
+    strip_env ~preserve:["PATH"] ();
+    Unix.putenv "PATH" (strip_path ());
     let out = match out_dir with None -> "." | Some dir -> drop_slash dir in
     let old = drop_slash dir in
-    let old_started, env = find_env old in
-    let custom_env_keys = List.map fst (custom_env (Some "")) in
+    let env = read_env old in
     List.iter (fun (k, v) -> if List.mem k custom_env_keys then () else Unix.putenv k v) env;
-    if not skip_system then install_system_packages old;
-    common_start global_options disable_sandboxing build_options diffoscope;
-    OpamStateConfig.update ~unlock_base:true ();
     let sw = List.assoc "SWITCH_PATH" env in
     (* for orb < 20211104 backwards compatibility *)
     if List.assoc_opt "PREFIX" env = None then
       Unix.putenv "PREFIX" (sw ^ "/_opam");
     if List.assoc_opt "PKG_CONFIG_PATH" env = None then
       Unix.putenv "PKG_CONFIG_PATH" (sw ^ "/_opam/lib/pkgconfig");
+    (if env_matches env then
+       log "environment matches"
+     else
+       failwith "environment does not match");
+    let old_started =
+      let full = Unix.realpath old in
+      let xs = String.split_on_char '/' full in
+      match List.rev xs with
+      | date :: _ -> date
+      | _ -> invalid_arg "couldn't determine name and date"
+    in
+    if not skip_system then install_system_packages old;
+    common_start global_options disable_sandboxing build_options diffoscope;
+    OpamStateConfig.update ~unlock_base:true ();
     let tracking_map_2nd, build2nd, started', package =
       rebuild ~skip_system ~sw ~bidir:dir ~keep_build out
     in
