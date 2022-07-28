@@ -67,6 +67,10 @@ let mirage_configure = "x-mirage-configure"
 let mirage_pre_build = "x-mirage-pre-build"
 let mirage_extra_repo = "x-mirage-extra-repo"
 
+let build_dir () =
+  OpamFilename.Dir.of_string
+    Filename.(concat (get_temp_dir_name ()) "orb-build")
+
 let custom_env_keys = [
   "OS" ; "OS_DISTRIBUTION" ; "OS_VERSION" ; "OS_FAMILY" ; "SWITCH_PATH"
 ]
@@ -696,10 +700,13 @@ let rebuild ~skip_system ~sw ~bidir ~keep_build out =
   import_switch skip_system out sw switch (Some switch_in);
   (if monorepo then begin
       log "extracting sources";
-      OpamGlobalState.with_ `Lock_none @@ fun gt ->
+      OpamGlobalState.with_ `Lock_write @@ fun gt ->
       OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
       OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
-      let dirname = OpamFilename.mk_tmp_dir () in
+      OpamSwitchCommand.switch `Lock_none gt switch;
+      let dirname = build_dir () in
+      OpamFilename.rmdir dirname;
+      OpamFilename.mkdir dirname;
       let cleanup_dir () = OpamFilename.rmdir dirname in
       let st =
         OpamSwitchState.update_package_metadata package opam st
@@ -775,7 +782,7 @@ let rebuild ~skip_system ~sw ~bidir ~keep_build out =
     end);
   let atom = package.OpamPackage.name, None in
   let tracking_map = tracking_map switch atom in
-  output_artifacts sw out tracking_map;
+  output_artifacts (Unix.getenv "PREFIX") out tracking_map;
   let build2nd = if keep_build then copy_build_dir out sw else sw in
   tracking_map, build2nd, started, package
 
@@ -917,7 +924,9 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
       log "installing dependencies";
       let gt, rt, st = install ~deps_only:true switch atom in
       log "installed dependencies";
-      let dirname = OpamFilename.mk_tmp_dir () in
+      let dirname = build_dir () in
+      OpamFilename.rmdir dirname;
+      OpamFilename.mkdir dirname;
       let cleanup_dir () = OpamFilename.rmdir dirname in
       (match OpamProcess.Job.run (download_and_extract_job st package dirname) with
        | Ok () -> ()
