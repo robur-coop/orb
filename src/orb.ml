@@ -756,7 +756,6 @@ let rebuild ~skip_system ~sw ~bidir ~keep_build out =
            log "downloaded %d tarballs" (List.length rs);
          | Error e ->
            log "download error %s" e; cleanup_dir (); exit 1);
-      drop_states ~gt ~rt ~st ();
       (match
          OpamFile.OPAM.extended opam mirage_configure of_opam_value
        with
@@ -767,9 +766,6 @@ let rebuild ~skip_system ~sw ~bidir ~keep_build out =
          (match execute_commands dirname (Unix.getenv "PREFIX") [ configure ] with
           | Ok () -> ();
           | Error msg -> log "%s" msg; cleanup_dir (); exit 1));
-      OpamGlobalState.with_ `Lock_none @@ fun gt ->
-      OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
-      OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
       let st =
         match OpamProcess.Job.run (build_and_install st dirname package) with
         | Ok st -> st
