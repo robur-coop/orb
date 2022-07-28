@@ -150,12 +150,12 @@ let output_system_packages_and_env ~skip_system dir env =
   let filename file =
     OpamFilename.(create prefix (Base.of_string file))
   in
+  let fn = filename dot_env in
+  write_file fn (env_to_string env);
   if not skip_system then begin
     let pkgs = filename dot_packages in
     dump_system_packages (OpamFilename.to_string pkgs)
-  end;
-  let fn = filename dot_env in
-  write_file fn (env_to_string env)
+  end
 
 let drop_states ?gt ?rt ?st () =
   OpamStd.Option.iter OpamSwitchState.drop st;
@@ -701,6 +701,9 @@ let rebuild ~skip_system ~sw ~bidir ~keep_build out =
       OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
       let dirname = OpamFilename.mk_tmp_dir () in
       let cleanup_dir () = OpamFilename.rmdir dirname in
+      let st =
+        OpamSwitchState.update_package_metadata package opam st
+      in
       (match OpamProcess.Job.run (download_and_extract_job st package dirname) with
        | Ok () -> ()
        | Error msg ->
@@ -753,9 +756,6 @@ let rebuild ~skip_system ~sw ~bidir ~keep_build out =
            log "downloaded %d tarballs" (List.length rs);
          | Error e ->
            log "download error %s" e; cleanup_dir (); exit 1);
-      let st =
-        OpamSwitchState.update_package_metadata package opam st
-      in
       drop_states ~gt ~rt ~st ();
       (match
          OpamFile.OPAM.extended opam mirage_configure of_opam_value
