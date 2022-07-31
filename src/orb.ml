@@ -752,10 +752,7 @@ let rebuild ~skip_system ~sw ~bidir ~keep_build out =
          in
          let rs = OpamParallel.map ~jobs ~command:pull_one v in
          match
-           List.fold_left (fun acc r -> match acc, r with
-               | Ok (), Ok () -> Ok ()
-               | Error _ as e, _ -> e
-               | _, (Error _ as e) -> e)
+           List.fold_left (fun acc r -> Result.bind acc (Fun.const r))
              (Ok ()) rs
          with
          | Ok () ->
