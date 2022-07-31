@@ -728,7 +728,7 @@ let rebuild ~skip_system ~sw ~bidir ~keep_build out =
            | Some Error `Msg s -> log "error retrieving opam-lock-location %s" s; ""
            | Some Ok path ->
              match List.rev (String.split_on_char '/' path) with
-             | _file :: _mirage :: tl -> String.concat "/" (List.rev tl) ^ "/"
+             | _file'opam'locked :: _mirage :: tl -> String.concat "/" (List.rev tl) ^ "/"
              | _ -> ""
          in
          let duni_dir = prefix ^ "duniverse" in
