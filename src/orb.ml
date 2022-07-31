@@ -825,14 +825,13 @@ let repos_of_opam =
     | _ -> Error (`Msg "expected a string")
   in
   let extract_repo = function
-    | { pelem = List { pelem = lbody ; _ } ; _ } ->
+    | { pelem = List { pelem = [ name ; url ] ; _ } ; _ } ->
       begin match lbody with
-        | [ name ; url ] ->
-          let* name = extract_string name in
-          let* url = extract_string url in
-          Ok (name, url)
-        | _ -> Error (`Msg "expected exactly two strings")
-      end
+      let* name = extract_string name in
+      let* url = extract_string url in
+      Ok (name, url)
+    | { pelem = List { pelem = _lbody ; _ } ; _ } ->
+      Error (`Msg "expected exactly two strings")
     | _ -> Error (`Msg "expected a pair of strings")
   in
   function
