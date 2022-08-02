@@ -260,35 +260,15 @@ let install ?deps_only switch atom =
     log "Exception while installing: %s" (Printexc.to_string e);
     exit 1
 
-let tracking_map switch atom =
+let tracking_map switch package =
   OpamGlobalState.with_ `Lock_none @@ fun gt ->
   OpamSwitchState.with_ `Lock_none ~switch gt @@ fun st ->
   log "tracking map got locks";
-  let st, packages =
-    let p =
-      log "tracking map atom (package set %d - %d packages)"
-        (OpamPackage.Set.cardinal st.installed)
-        (OpamPackage.Set.cardinal st.packages);
-      let packages = OpamFormula.packages_of_atoms st.installed [ atom ] in
-      log "tracking map %d packages" (OpamPackage.Set.cardinal packages);
-      let ifer = OpamPackage.Set.inter st.installed packages in
-      log "tracking map %d packages later" (OpamPackage.Set.cardinal ifer);
-      ifer
-    in
-    st, p
+  let changes_file =
+    OpamPath.Switch.changes gt.root switch (OpamPackage.name package)
+    |> OpamFile.Changes.read
   in
-  log "tracking map got st and %d packages"
-    (OpamPackage.Set.cardinal packages);
-  let tr =
-    OpamPackage.Set.fold (fun pkg acc ->
-        let name = OpamPackage.name pkg in
-        let changes_file =
-          OpamPath.Switch.changes gt.root switch name
-          |> OpamFile.Changes.read
-        in
-        OpamPackage.Map.add pkg changes_file acc)
-      packages OpamPackage.Map.empty
-  in
+  let tr = OpamPackage.Map.singleton package changes_file in
   log "tracking map got tr, dropping states";
   drop_states ~gt ~st ();
   tr
@@ -777,8 +757,7 @@ let rebuild ~skip_system ~sw ~bidir ~keep_build out =
       cleanup_dir ();
       drop_states ~gt ~rt ~st ()
     end);
-  let atom = package.OpamPackage.name, None in
-  let tracking_map = tracking_map switch atom in
+  let tracking_map = tracking_map switch package in
   output_artifacts (Unix.getenv "PREFIX") out tracking_map;
   let build2nd = if keep_build then copy_build_dir out sw else sw in
   tracking_map, build2nd, started, package
@@ -905,7 +884,20 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
   OpamGlobalState.with_ `Lock_none @@ fun gt ->
   OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
   OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
-  let package = OpamSwitchState.get_package st (fst atom) in
+  let package =
+    match atom with
+    | name, None ->
+      OpamSwitchState.get_package st name
+    | _, Some (`Eq, _) ->
+      let atom = (atom :> OpamFormula.atom) in
+      let packages = OpamSwitchState.packages_of_atoms st [ atom ] in
+      match OpamPackage.Set.cardinal packages with
+      | 0 -> log "no solution found for %s" (OpamFormula.string_of_atom atom); exit 1
+      | 1 -> OpamPackage.Set.choose packages
+      | n ->
+        log "too many (%d) solutions found for %s" n (OpamFormula.string_of_atom atom);
+        exit 1
+  in
   let opam = OpamSwitchState.opam st package in
   drop_states ~gt ~rt ~st ();
   begin
@@ -914,11 +906,11 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
       OpamFile.OPAM.extended opam mirage_pre_build of_opam_value
     with
     | None, None ->
-      let gt, rt, st = install switch atom in
+      let gt, rt, st = install switch (atom :> OpamFormula.atom) in
       drop_states ~gt ~rt ~st ()
     | Some Ok configure, Some Ok pre_build ->
       log "installing dependencies";
-      let gt, rt, st = install ~deps_only:true switch atom in
+      let gt, rt, st = install ~deps_only:true switch (atom :> OpamFormula.atom) in
       log "installed dependencies";
       let dirname = build_dir () in
       OpamFilename.rmdir dirname;
@@ -984,7 +976,7 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
       log "only %s, but no %s present" mirage_configure mirage_pre_build;
       exit 1
   end;
-  let tracking_map = tracking_map switch atom in
+  let tracking_map = tracking_map switch package in
   output_artifacts prefix bidir tracking_map;
   let build1st =
     if keep_build
@@ -1118,18 +1110,31 @@ let build_cmd =
       "use the provided solver timeout instead of the default (sets OPAMSOLVERTIMEOUT)"
       Arg.(some string) None
   in
-  let atom =
+  let atom_exact =
+    let atom_exact =
+      let parse s =
+        match Arg.conv_parser atom s with
+        | (Ok (_, None) | Ok (_, Some (`Eq, _))) as v -> v
+        | Ok (_, Some (_relop, _version)) ->
+          Error (`Msg "only exact version match constraint allowed")
+        | Error _ as e -> e
+      in
+      let printer ppf a =
+        Arg.conv_printer atom ppf (a :> OpamFormula.atom)
+      in
+      Arg.conv (parse, printer)
+    in
     let info_ =
-      let doc = "Package name, with an optional version or constraint, e.g `pkg', `pkg.1.0' or `pkg>=0.5'." in
+      let doc = "Package name, with an optional version, e.g `pkg' or `pkg.1.0.0'." in
       Arg.info ~docv:"PACKAGE" ~doc []
     in
-    Arg.(required & pos 0 (some atom) None & info_)
+    Arg.(required & pos 0 (some atom_exact) None & info_)
   in
   let term =
     Term.((const build $ global_options cli $ disable_sandboxing $ build_options cli
            $ diffoscope $ keep_build $ twice
            $ repos $ out_dir $ switch_name $ source_date_epoch $ skip_system
-           $ solver_timeout $ atom))
+           $ solver_timeout $ atom_exact))
   and info = Cmd.info "build" ~man ~doc
   in
   Cmd.v info term
