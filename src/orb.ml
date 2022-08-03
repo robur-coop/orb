@@ -617,9 +617,7 @@ let of_opam_value =
     | { pelem = String s ; _ } -> Ok s
     | { pelem = Ident s ; _ } ->
       if String.equal s "make" then
-        match OpamSysPoll.os_family () with
-        | Some "bsd" -> Ok "gmake"
-        | _ -> Ok "make"
+        Ok (Lazy.force OpamStateConfig.(!r.makecmd))
       else
         Ok s
     | _ -> Error (`Msg "expected a string or identifier")
