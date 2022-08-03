@@ -582,7 +582,7 @@ let location_of_opam =
   | { pelem = String s ; _ } -> Ok s
   | _ -> Error (`Msg "expected a string")
 
-let rebuild ~skip_system ~sw ~bidir ~keep_build out =
+let rebuild ~skip_system ~sw ~bidir out =
   let switch = OpamSwitch.of_string sw in
   let switch_in = switch_filename bidir in
   let sw_exp = OpamFile.SwitchExport.read switch_in in
@@ -699,7 +699,7 @@ let rebuild ~skip_system ~sw ~bidir ~keep_build out =
     end);
   let tracking_map = tracking_map switch package in
   output_artifacts (Unix.getenv "PREFIX") out tracking_map;
-  let build2nd = if keep_build then copy_build_dir out sw else sw in
+  let build2nd = if OpamClientConfig.(!r.keep_build_dir) then copy_build_dir out sw else sw in
   tracking_map, build2nd, package
 
 let add_repo s (name, url) =
@@ -780,7 +780,7 @@ let modify_opam_file st package opam dirname =
       Ok (OpamSwitchState.update_package_metadata package opam st)
 
 (* Main function *)
-let build global_options disable_sandboxing build_options keep_build twice
+let build global_options disable_sandboxing build_options twice
     repos out_dir switch_name epoch skip_system solver_timeout atom =
   strip_env ~preserve:["HOME";"PATH"] ();
   Unix.putenv "PATH" (strip_path ());
@@ -816,7 +816,7 @@ let build global_options disable_sandboxing build_options keep_build twice
   Unix.putenv "OPAMCONFIRMLEVEL" "unsafe-yes";
   common_start global_options disable_sandboxing build_options;
   log "using root %S and switch %S" root sw;
-  if not keep_build then clean_switch := Some (switch, skip_system, bidir, sw);
+  if not OpamClientConfig.(!r.keep_build_dir) then clean_switch := Some (switch, skip_system, bidir, sw);
   let repos = add_repos repos in
   install_switch ~repos switch;
   OpamGlobalState.with_ `Lock_none @@ fun gt ->
@@ -917,11 +917,11 @@ let build global_options disable_sandboxing build_options keep_build twice
   let tracking_map = tracking_map switch package in
   output_artifacts prefix bidir tracking_map;
   let build1st =
-    if keep_build
+    if OpamClientConfig.(!r.keep_build_dir)
     then Some (copy_build_dir bidir prefix)
     else None
   in
-  if keep_build then begin
+  if OpamClientConfig.(!r.keep_build_dir) then begin
     output_system_packages_and_env ~skip_system bidir (create_env sw);
     export switch bidir;
   end;
@@ -935,12 +935,12 @@ let build global_options disable_sandboxing build_options keep_build twice
     in
     log "second run, outdir is %s" outdir;
     let tracking_map', build2nd, _ =
-      rebuild ~skip_system ~sw ~bidir ~keep_build outdir
+      rebuild ~skip_system ~sw ~bidir outdir
     in
     compare_builds tracking_map tracking_map' build1st build2nd
   end
 
-let rebuild global_options disable_sandboxing build_options keep_build skip_system dir out_dir =
+let rebuild global_options disable_sandboxing build_options skip_system dir out_dir =
   if dir = "" then failwith "require build info directory" else begin
     strip_env ~preserve:["PATH"] ();
     Unix.putenv "PATH" (strip_path ());
@@ -962,7 +962,7 @@ let rebuild global_options disable_sandboxing build_options keep_build skip_syst
     common_start global_options disable_sandboxing build_options;
     OpamStateConfig.update ~unlock_base:true ();
     let tracking_map_2nd, build2nd, package =
-      rebuild ~skip_system ~sw ~bidir:dir ~keep_build out
+      rebuild ~skip_system ~sw ~bidir:dir out
     in
     let tracking_map_1st =
       match read_tracking_map old (OpamPackage.Name.to_string package.OpamPackage.name) with
@@ -982,9 +982,6 @@ let validity = cli_from cli2_1
 
 let mk_flag a b = mk_flag ~cli validity a b
 let mk_opt a b c d e = mk_opt ~cli validity a b c d e
-
-let keep_build =
-  mk_flag ["keep-build"] "keep built temporary products"
 
 let skip_system =
   mk_flag [ "skip-system" ] "skip system packages"
@@ -1059,8 +1056,7 @@ let build_cmd =
   in
   let term =
     Term.((const build $ global_options cli $ disable_sandboxing $ build_options cli
-           $ keep_build $ twice
-           $ repos $ out_dir $ switch_name $ source_date_epoch $ skip_system
+           $ twice $ repos $ out_dir $ switch_name $ source_date_epoch $ skip_system
            $ solver_timeout $ atom_exact))
   and info = Cmd.info "build" ~man ~doc
   in
@@ -1085,7 +1081,7 @@ let rebuild_cmd =
   in
   let term =
     Term.((const rebuild $ global_options cli $ disable_sandboxing $ build_options cli
-           $ keep_build $ skip_system $ build_info $ out_dir))
+           $ skip_system $ build_info $ out_dir))
   and info = Cmd.info "rebuild" ~man ~doc
   in
   Cmd.v info term
