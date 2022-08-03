@@ -205,7 +205,13 @@ let os_matches env =
     match v, List.assoc_opt key env with
     | None, _ -> log "key %s not available" key ; true
     | _, None -> log "key %s not found in environment" key ; true
-    | Some v, Some v' -> String.equal v v'
+    | Some v, Some v' ->
+      if String.equal v v' then
+        true
+      else begin
+        log "value for key %s differ: %S vs %S" key v v';
+        false
+      end
   in
   List.for_all (fun (k, v) -> opt_compare k v) (custom_env None)
 
@@ -880,7 +886,7 @@ let build global_options disable_sandboxing build_options twice
     compare_builds changes changes' build1st build2nd
   end
 
-let rebuild global_options disable_sandboxing build_options skip_system build_info out_dir =
+let rebuild global_options disable_sandboxing build_options skip_system ignore_env_difference build_info out_dir =
   if build_info = "" then failwith "require build info directory" else begin
     strip_env ~preserve:["PATH"] ();
     Unix.putenv "PATH" (strip_path ());
@@ -891,6 +897,8 @@ let rebuild global_options disable_sandboxing build_options skip_system build_in
     let sw = List.assoc "SWITCH_PATH" env in
     (if os_matches env then
        log "environment matches"
+     else if ignore_env_difference then
+       log "environment differs (ignored)"
      else
        failwith "environment does not match");
     if not skip_system then install_system_packages stripped_build_info;
@@ -917,6 +925,9 @@ let mk_opt a b c d e = mk_opt ~cli validity a b c d e
 
 let skip_system =
   mk_flag [ "skip-system" ] "skip system packages"
+
+let ignore_env_differences =
+  mk_flag [ "ignore-env-differences" ] "ignore environment differences"
 
 let out_dir =
   mk_opt [ "out" ] "[DIR]"
@@ -1013,7 +1024,7 @@ let rebuild_cmd =
   in
   let term =
     Term.((const rebuild $ global_options cli $ disable_sandboxing $ build_options cli
-           $ skip_system $ build_info $ out_dir))
+           $ ignore_env_differences $ skip_system $ build_info $ out_dir))
   and info = Cmd.info "rebuild" ~man ~doc
   in
   Cmd.v info term
