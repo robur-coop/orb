@@ -266,14 +266,13 @@ let tracking_map switch package =
   OpamGlobalState.with_ `Lock_none @@ fun gt ->
   OpamSwitchState.with_ `Lock_none ~switch gt @@ fun st ->
   log "tracking map got locks";
-  let changes_file =
+  let changes =
     OpamPath.Switch.changes gt.root switch (OpamPackage.name package)
     |> OpamFile.Changes.read
   in
-  let tr = OpamPackage.Map.singleton package changes_file in
-  log "tracking map got tr, dropping states";
+  log "got tracking map, dropping states";
   drop_states ~gt ~st ();
-  tr
+  changes
 
 let read_tracking_map dir package =
   let nam = Printf.sprintf "%s/%s%s" dir package dot_hash in
@@ -291,79 +290,55 @@ let string_of_diff = function
   | Second c -> OpamDirTrack.string_of_change c ^ " / ๛"
 
 (* Calculate the final diff map *)
-let diff_map track1 track2 =
-  OpamPackage.Map.fold (fun pkg sm1 map ->
-      log "diff map folding %s" (OpamPackage.Name.to_string pkg.OpamPackage.name);
-      let file_map =
-        match OpamPackage.Map.find_opt pkg track2 with
-        | Some sm2 ->
-          let diff, rest =
-            OpamStd.String.Map.fold (fun file d1 (diff, sm2) ->
-                match OpamStd.String.Map.find_opt file sm2 with
-                | Some d2 ->
-                  log "diff map for %s found" file;
-                  let diff =
-                    if d1 <> d2 then begin
-                      log "d1 and d2 mismatch";
-                      OpamStd.String.Map.add file (Both (d1,d2)) diff
-                    end else diff
-                  in
-                  diff,
-                  OpamStd.String.Map.remove file sm2
-                | None ->
-                  log "diff map for %s not found" file;
-                  OpamStd.String.Map.add file (First d1) diff, sm2)
-              sm1 (OpamStd.String.Map.empty, sm2)
+let diff_map sm1 sm2 =
+  if OpamStd.String.Map.compare compare sm1 sm2 = 0 then
+    OpamStd.String.Map.empty
+  else
+    let diff, rest =
+      OpamStd.String.Map.fold (fun file d1 (diff, sm2) ->
+        match OpamStd.String.Map.find_opt file sm2 with
+        | Some d2 ->
+          let diff =
+            if d1 <> d2 then begin
+              log "%s d1 and d2 mismatch" file;
+              OpamStd.String.Map.add file (Both (d1, d2)) diff
+            end else diff
           in
-          if OpamStd.String.Map.is_empty rest then begin
-            log "diff map rest empty";
-            diff
-          end else begin
-            log "diff map union";
-            OpamStd.String.Map.union (fun _ _ -> assert false) diff
-              (OpamStd.String.Map.map (fun d2 -> Second d2) rest)
-          end
+          diff,
+          OpamStd.String.Map.remove file sm2
         | None ->
-          log "diff map no file map in track2";
-          OpamStd.String.Map.empty
-      in
-      if OpamStd.String.Map.is_empty file_map then map
-      else OpamPackage.Map.add pkg file_map map
-    ) track1 OpamPackage.Map.empty
+          log "diff map for %s not found in sm2" file;
+          OpamStd.String.Map.add file (First d1) diff, sm2)
+        sm1 (OpamStd.String.Map.empty, sm2)
+    in
+    if OpamStd.String.Map.is_empty rest then
+      diff
+    else
+      OpamStd.String.Map.union (fun _ _ -> assert false) diff
+        (OpamStd.String.Map.map (fun d2 -> Second d2) rest)
 
-
-let output_artifacts sw_prefix dir map =
-  let maps =
-    OpamPackage.Map.fold (fun pkg map acc ->
-        let value = OpamFile.Changes.write_to_string map in
-        let fn = OpamPackage.Name.to_string pkg.name ^ dot_hash in
-        (fn, value) :: acc)
-      map []
-  in
+let output_artifacts sw_prefix dir pkg changes =
   let prefix = OpamFilename.Dir.of_string dir in
   (* copy artifacts *)
-  OpamPackage.Map.iter (fun _ map ->
-      OpamStd.String.Map.iter (fun name -> function
-          | OpamDirTrack.Added _ ->
-            let src = Format.sprintf "%s/%s" sw_prefix name
-            and tgt = Format.sprintf "%s/%s" dir name
-            in
-            let r = Sys.command ("mkdir -p " ^ Filename.dirname tgt) in
-            if r <> 0 then log "failed to create directory for %s" tgt
-            else begin
-              let r = Sys.command ("cp " ^ src ^ " " ^ tgt) in
-              if r <> 0 then log "failed to copy %s to %s" src tgt
-            end
-          | _ -> ()) map)
-    map;
+  OpamStd.String.Map.iter (fun name -> function
+      | OpamDirTrack.Added _ ->
+        let src = Format.sprintf "%s/%s" sw_prefix name
+        and tgt = Format.sprintf "%s/%s" dir name
+        in
+        let r = Sys.command ("mkdir -p " ^ Filename.dirname tgt) in
+        if r <> 0 then log "failed to create directory for %s" tgt
+        else begin
+          let r = Sys.command ("cp " ^ src ^ " " ^ tgt) in
+          if r <> 0 then log "failed to copy %s to %s" src tgt
+        end
+      | _ -> ()) changes;
   (* output metadata: hashes, environment, system packages *)
   let filename file =
     OpamFilename.(create prefix (Base.of_string file))
   in
-  List.iter (fun (n, v) ->
-      let fn = filename n in
-      log "writing %s" (OpamFilename.to_string fn);
-      write_file fn v) maps
+  let fn = filename OpamPackage.(Name.to_string pkg.name ^ dot_hash) in
+  log "writing %s" (OpamFilename.to_string fn);
+  write_file fn (OpamFile.Changes.write_to_string changes)
 
 let install_system_packages dir =
   let filename = Printf.sprintf "%s/%s" dir dot_packages in
@@ -389,6 +364,7 @@ let common_start global_options disable_sandboxing build_options =
   let root = OpamStateConfig.(!r.root_dir) in
   let config_f = OpamPath.config root in
   let already_init = OpamFile.exists config_f in
+  OpamCoreConfig.update ~precise_tracking:true ~yes:(Some true) ~confirm_level:`unsafe_yes ();
   if not already_init then begin (* could also be assert *)
     let init_config = OpamInitDefaults.init_config ~sandboxing:(not disable_sandboxing) () in
     let repo_url = "/tmp/nonexisting" in
@@ -406,18 +382,16 @@ let common_start global_options disable_sandboxing build_options =
     in
     drop_states ~gt ~rt ();
   end;
-  OpamCoreConfig.update ~precise_tracking:true ~yes:(Some true) ~confirm_level:`unsafe_yes ();
   OpamStd.Sys.at_exit cleanup
 
-let compare_builds tracking_map tracking_map' build_dir build_dir' =
-  let final_map = diff_map tracking_map tracking_map' in
-  if OpamPackage.Map.is_empty final_map then
+let compare_builds changes changes' build_dir build_dir' =
+  let final_map = diff_map changes changes' in
+  if OpamStd.String.Map.is_empty final_map then
     log "%s" (OpamConsole.colorise `green "It is reproducible!!!")
   else begin
     log "There are some %s\n%s"
       (OpamConsole.colorise `red "mismatching hashes")
-      (OpamPackage.Map.to_string
-         (OpamStd.String.Map.to_string string_of_diff) final_map);
+      (OpamStd.String.Map.to_string string_of_diff final_map);
     match build_dir with
     | Some b -> log "Plaese compare build directories %s and %s" b build_dir'
     | _ -> ()
@@ -684,10 +658,10 @@ let rebuild ~skip_system ~sw ~bidir out =
       in
       drop_states ~gt ~rt ~st ()
     end);
-  let tracking_map = tracking_map switch package in
-  output_artifacts (Unix.getenv "PREFIX") out tracking_map;
+  let changes = tracking_map switch package in
+  output_artifacts (Unix.getenv "PREFIX") out package changes;
   let build2nd = if OpamClientConfig.(!r.keep_build_dir) then copy_build_dir out sw else sw in
-  tracking_map, build2nd, package
+  changes, build2nd, package
 
 let add_repo s (name, url) =
   (* todo trust anchors *)
@@ -702,7 +676,7 @@ let add_repos repos =
       List.map (fun s -> match String.split_on_char ':' s with
           | name :: rest ->
             OpamRepositoryName.of_string name, String.concat ":" rest
-          | _ -> failwith "unknown repo") xs
+          | _ -> failwith ("unknown repo: " ^ s)) xs
   in
   let names = List.map fst repos in
   OpamGlobalState.with_ `Lock_none (fun gt ->
@@ -710,8 +684,7 @@ let add_repos repos =
           let rt = List.fold_left add_repo rt repos in
           let failed, _rt = OpamRepositoryCommand.update_with_auto_upgrade rt names in
           List.iter
-            (fun rn -> log "repo update failed for %s"
-                (OpamRepositoryName.to_string rn))
+            (fun rn -> log "repo update failed for %s" (OpamRepositoryName.to_string rn))
             failed
         ));
   names
@@ -784,7 +757,7 @@ let build global_options disable_sandboxing build_options twice
     | None -> None, Filename.(basename (temp_file "orb" "temp"))
     | Some x ->
       let x = drop_slash x in
-      if String.get x 0 = '/' then
+      if not (Filename.is_relative x) then
         Some (Filename.dirname x), Filename.basename x
       else
         try
@@ -800,10 +773,10 @@ let build global_options disable_sandboxing build_options twice
   let prefix = root ^ "/" ^ sw in
   Unix.putenv "PREFIX" prefix;
   Unix.putenv "PKG_CONFIG_PATH" (prefix ^ "/lib/pkgconfig");
-  Unix.putenv "OPAMCONFIRMLEVEL" "unsafe-yes";
   common_start global_options disable_sandboxing build_options;
   log "using root %S and switch %S" root sw;
-  if not OpamClientConfig.(!r.keep_build_dir) then clean_switch := Some (switch, skip_system, bidir, sw);
+  if not OpamClientConfig.(!r.keep_build_dir) then
+    clean_switch := Some (switch, skip_system, bidir, sw);
   let repos = add_repos repos in
   install_switch ~repos switch;
   OpamGlobalState.with_ `Lock_none @@ fun gt ->
@@ -811,17 +784,17 @@ let build global_options disable_sandboxing build_options twice
   OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
   let package =
     match atom with
-    | name, None ->
-      OpamSwitchState.get_package st name
+    | name, None -> OpamSwitchState.get_package st name
     | _, Some (`Eq, _) ->
       let atom = (atom :> OpamFormula.atom) in
       let packages = OpamSwitchState.packages_of_atoms st [ atom ] in
-      match OpamPackage.Set.cardinal packages with
-      | 0 -> log "no solution found for %s" (OpamFormula.string_of_atom atom); exit 1
-      | 1 -> OpamPackage.Set.choose packages
-      | n ->
-        log "too many (%d) solutions found for %s" n (OpamFormula.string_of_atom atom);
+      if OpamPackage.Set.cardinal packages = 1 then
+        OpamPackage.Set.choose packages
+      else begin
+        log "expecting exactly one, but found %d solutions for %s"
+          (OpamPackage.Set.cardinal packages) (OpamFormula.string_of_atom atom);
         exit 1
+      end
   in
   let opam = OpamSwitchState.opam st package in
   drop_states ~gt ~rt ~st ();
@@ -901,8 +874,8 @@ let build global_options disable_sandboxing build_options twice
       log "only %s, but no %s present" mirage_configure mirage_pre_build;
       exit 1
   end;
-  let tracking_map = tracking_map switch package in
-  output_artifacts prefix bidir tracking_map;
+  let changes = tracking_map switch package in
+  output_artifacts prefix bidir package changes;
   let build1st =
     if OpamClientConfig.(!r.keep_build_dir)
     then Some (copy_build_dir bidir prefix)
@@ -921,10 +894,8 @@ let build global_options disable_sandboxing build_options twice
         bidir ^ "2"
     in
     log "second run, outdir is %s" outdir;
-    let tracking_map', build2nd, _ =
-      rebuild ~skip_system ~sw ~bidir outdir
-    in
-    compare_builds tracking_map tracking_map' build1st build2nd
+    let changes', build2nd, _ = rebuild ~skip_system ~sw ~bidir outdir in
+    compare_builds changes changes' build1st build2nd
   end
 
 let rebuild global_options disable_sandboxing build_options skip_system build_info out_dir =
@@ -943,16 +914,14 @@ let rebuild global_options disable_sandboxing build_options skip_system build_in
     if not skip_system then install_system_packages stripped_build_info;
     common_start global_options disable_sandboxing build_options;
     OpamStateConfig.update ~unlock_base:true ();
-    let tracking_map_2nd, build2nd, package = rebuild ~skip_system ~sw ~bidir:build_info out in
-    let tracking_map_1st =
-      let pkg_name = OpamPackage.Name.to_string package.OpamPackage.name in
-      match read_tracking_map stripped_build_info pkg_name with
-      | None -> log "no tracking map for %s found" pkg_name; OpamPackage.Map.empty
-      | Some tm -> OpamPackage.Map.singleton package tm
-    in
-    let build1st = find_build_dir stripped_build_info in
-    log "comparing with old build dir %s" (match build1st with None -> "no" | Some x -> x);
-    compare_builds tracking_map_1st tracking_map_2nd build1st build2nd
+    let changes', build2nd, package = rebuild ~skip_system ~sw ~bidir:build_info out in
+    let pkg_name = OpamPackage.Name.to_string package.OpamPackage.name in
+    match read_tracking_map stripped_build_info pkg_name with
+    | None -> log "no tracking map for %s found" pkg_name; exit 1
+    | Some changes ->
+      let build1st = find_build_dir stripped_build_info in
+      log "comparing with old build dir %s" (match build1st with None -> "no" | Some x -> x);
+      compare_builds changes changes' build1st build2nd
   end
 
 (** CLI *)
