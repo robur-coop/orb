@@ -58,7 +58,6 @@ let dot_hash = ".build-hashes"
 let dot_env = "build-environment"
 let dot_packages = "system-packages"
 let dot_build = "build"
-let dot_diffoscope = ".diffoscope"
 
 (* custom opam extensions *)
 let opam_monorepo_duni = "x-opam-monorepo-duniverse-dirs"
@@ -399,64 +398,7 @@ let copy_build_dir tgt src =
     ~dst:(OpamFilename.Dir.of_string target);
   target
 
-let generate_diffs root1 root2 final_map dir =
-  let dir = OpamFilename.Dir.of_string dir
-  and root1 = OpamFilename.Dir.of_string root1
-  and root2 = OpamFilename.Dir.of_string root2
-  in
-  let open OpamFilename.Op in
-  OpamFilename.mkdir dir;
-  OpamPackage.Map.iter (fun pkg _ ->
-      OpamFilename.mkdir (dir / OpamPackage.to_string pkg)) final_map;
-  let full =
-    let copy pkg file num =
-      let root, suffix =
-        match num with
-        | `fst -> root1, "orb_fst"
-        | `snd -> root2, "orb_snd"
-      in
-      OpamFilename.copy ~src:(root // file)
-        ~dst:(OpamFilename.add_extension (dir / pkg // file) suffix)
-    in
-    let make_cmd pkg file =
-      OpamSystem.make_command "diffoscope"
-        [OpamFilename.to_string (root1 // file);
-         OpamFilename.to_string (root2 // file);
-         "--text"; (OpamFilename.to_string (dir / pkg // (file ^ ".diff")))]
-    in
-    OpamPackage.Map.fold (fun pkg tr acc ->
-        let spkg = OpamPackage.to_string pkg in
-        OpamStd.String.Map.fold (fun file diff acc ->
-            (diff, (copy spkg file), (make_cmd spkg file)) :: acc) tr acc)
-      final_map []
-  in
-  (* Here we use opam parallelism *)
-  let open OpamProcess.Job.Op in
-  let command (diff, copy, cmd) =
-    match diff with
-    | Both (_, _) ->
-      copy `fst;
-      copy `snd;
-      cmd @@> fun _ -> Done ()
-    | First _ -> copy `fst; Done ()
-    | Second _ -> copy `snd; Done ()
-  in
-  try
-    OpamParallel.iter ~jobs:OpamStateConfig.(Lazy.force !r.jobs) ~command full
-  with OpamParallel.Errors (_, err, can)->
-    OpamConsole.error "Some jobs failed:\n%s\nand other canceled:\n%s\n"
-      (OpamStd.Format.itemize (fun (i,e) ->
-           let _, _, cmd = List.nth full i in
-           Printf.sprintf "%s : %s"
-             (OpamProcess.string_of_command cmd) (Printexc.to_string e))
-          err)
-      (OpamStd.Format.itemize (fun i ->
-           let _, _, cmd = List.nth full i in
-           OpamProcess.string_of_command cmd) can)
-
-let common_start global_options disable_sandboxing build_options diffoscope =
-  if diffoscope && OpamSystem.resolve_command "diffoscope" = None then
-    exit_error `Not_found "diffoscope not found";
+let common_start global_options disable_sandboxing build_options =
   (* all environment variables need to be set/unset before the following line,
      which forces the lazy Unix.environment in OpamStd *)
   OpamArg.apply_global_options cli global_options;
@@ -484,19 +426,20 @@ let common_start global_options disable_sandboxing build_options diffoscope =
   OpamCoreConfig.update ~precise_tracking:true ~yes:(Some true) ~confirm_level:`unsafe_yes ();
   OpamStd.Sys.at_exit cleanup
 
-let compare_builds tracking_map tracking_map' dir build1st build2nd diffoscope =
+let compare_builds tracking_map tracking_map' build_dir build_dir' =
   let final_map = diff_map tracking_map tracking_map' in
   if OpamPackage.Map.is_empty final_map then
     log "%s" (OpamConsole.colorise `green "It is reproducible!!!")
-  else
-    (log "There are some %s\n%s"
-       (OpamConsole.colorise `red "mismatching hashes")
-       (OpamPackage.Map.to_string
-          (OpamStd.String.Map.to_string string_of_diff) final_map);
-     if diffoscope then
-       match build1st with
-       | None -> log "no previous build dir available, couldn't run diffoscope"
-       | Some build1 -> generate_diffs build1 build2nd final_map dir)
+  else begin
+    log "There are some %s\n%s"
+      (OpamConsole.colorise `red "mismatching hashes")
+      (OpamPackage.Map.to_string
+         (OpamStd.String.Map.to_string string_of_diff) final_map);
+    match build_dir with
+    | Some b ->
+      log "Compare output directories %s and %s" b build_dir'
+    | _ -> ()
+  end
 
 let read_env dir =
   let env_file = Filename.concat dir dot_env in
@@ -660,7 +603,6 @@ let location_of_opam =
   | _ -> Error (`Msg "expected a string")
 
 let rebuild ~skip_system ~sw ~bidir ~keep_build out =
-  let started = Unix.time () in
   let switch = OpamSwitch.of_string sw in
   let switch_in = switch_filename bidir in
   let sw_exp = OpamFile.SwitchExport.read switch_in in
@@ -779,7 +721,7 @@ let rebuild ~skip_system ~sw ~bidir ~keep_build out =
   let tracking_map = tracking_map switch atom in
   output_artifacts (Unix.getenv "PREFIX") out tracking_map;
   let build2nd = if keep_build then copy_build_dir out sw else sw in
-  tracking_map, build2nd, started, package
+  tracking_map, build2nd, package
 
 let add_repo s (name, url) =
   (* todo trust anchors *)
@@ -859,9 +801,8 @@ let modify_opam_file st package opam dirname =
       Ok (OpamSwitchState.update_package_metadata package opam st)
 
 (* Main function *)
-let build global_options disable_sandboxing build_options diffoscope keep_build twice
+let build global_options disable_sandboxing build_options keep_build twice
     repos out_dir switch_name epoch skip_system solver_timeout atom =
-  let started = Unix.time () in
   strip_env ~preserve:["HOME";"PATH"] ();
   Unix.putenv "PATH" (strip_path ());
   Unix.putenv "SOURCE_DATE_EPOCH"
@@ -894,7 +835,7 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
   Unix.putenv "PREFIX" prefix;
   Unix.putenv "PKG_CONFIG_PATH" (prefix ^ "/lib/pkgconfig");
   Unix.putenv "OPAMCONFIRMLEVEL" "unsafe-yes";
-  common_start global_options disable_sandboxing build_options diffoscope;
+  common_start global_options disable_sandboxing build_options;
   log "using root %S and switch %S" root sw;
   if not keep_build then clean_switch := Some (switch, skip_system, bidir, sw);
   let repos = add_repos repos in
@@ -1001,14 +942,13 @@ let build global_options disable_sandboxing build_options diffoscope keep_build 
         bidir ^ "2"
     in
     log "second run, outdir is %s" outdir;
-    let tracking_map', build2nd, started', _ =
+    let tracking_map', build2nd, _ =
       rebuild ~skip_system ~sw ~bidir ~keep_build outdir
     in
-    let dir = Printf.sprintf "%s/%s-%s%s" bidir (ts started) (ts started') dot_diffoscope in
-    compare_builds tracking_map tracking_map' dir build1st build2nd diffoscope
+    compare_builds tracking_map tracking_map' build1st build2nd
   end
 
-let rebuild global_options disable_sandboxing build_options diffoscope keep_build skip_system dir out_dir =
+let rebuild global_options disable_sandboxing build_options keep_build skip_system dir out_dir =
   if dir = "" then failwith "require build info directory" else begin
     strip_env ~preserve:["PATH"] ();
     Unix.putenv "PATH" (strip_path ());
@@ -1026,17 +966,10 @@ let rebuild global_options disable_sandboxing build_options diffoscope keep_buil
        log "environment matches"
      else
        failwith "environment does not match");
-    let old_started =
-      let full = Unix.realpath old in
-      let xs = String.split_on_char '/' full in
-      match List.rev xs with
-      | date :: _ -> date
-      | _ -> invalid_arg "couldn't determine name and date"
-    in
     if not skip_system then install_system_packages old;
-    common_start global_options disable_sandboxing build_options diffoscope;
+    common_start global_options disable_sandboxing build_options;
     OpamStateConfig.update ~unlock_base:true ();
-    let tracking_map_2nd, build2nd, started', package =
+    let tracking_map_2nd, build2nd, package =
       rebuild ~skip_system ~sw ~bidir:dir ~keep_build out
     in
     let tracking_map_1st =
@@ -1046,8 +979,7 @@ let rebuild global_options disable_sandboxing build_options diffoscope keep_buil
     in
     let build1st = find_build_dir old in
     log "comparing with old build dir %s" (match build1st with None -> "no" | Some x -> x);
-    let dir = Printf.sprintf "%s/%s-%s%s" dir (ts started') old_started dot_diffoscope in
-    compare_builds tracking_map_1st tracking_map_2nd dir build1st build2nd diffoscope
+    compare_builds tracking_map_1st tracking_map_2nd build1st build2nd
   end
 
 (** CLI *)
@@ -1058,8 +990,6 @@ let validity = cli_from cli2_1
 
 let mk_flag a b = mk_flag ~cli validity a b
 let mk_opt a b c d e = mk_opt ~cli validity a b c d e
-
-let diffoscope = mk_flag ["diffoscope"] "use diffoscope to generate a report"
 
 let keep_build =
   mk_flag ["keep-build"] "keep built temporary products"
@@ -1124,7 +1054,7 @@ let build_cmd =
   in
   let term =
     Term.((const build $ global_options cli $ disable_sandboxing $ build_options cli
-           $ diffoscope $ keep_build $ twice
+           $ keep_build $ twice
            $ repos $ out_dir $ switch_name $ source_date_epoch $ skip_system
            $ solver_timeout $ atom))
   and info = Cmd.info "build" ~man ~doc
@@ -1139,8 +1069,7 @@ let rebuild_cmd =
         opam switch, a build environment, and reported build hashes. If an \
         existing build environment matches the host operating system, the \
         hashes of the installed files of all roots in the export are compared \
-        against the previous build. If the build directory is kept, diffoscope \
-        can be used to make the differences human readable.";
+        against the previous build.";
     `S "ARGUMENTS";
     `S "OPTIONS";
   ] @ OpamArg.man_build_option_section
@@ -1150,7 +1079,7 @@ let rebuild_cmd =
     Arg.(value & pos 0 string "" & info [] ~doc ~docv:"DIR")
   in
   let term =
-    Term.((const rebuild $ global_options cli $ disable_sandboxing $ build_options cli $ diffoscope
+    Term.((const rebuild $ global_options cli $ disable_sandboxing $ build_options cli
            $ keep_build $ skip_system $ build_info $ out_dir))
   and info = Cmd.info "rebuild" ~man ~doc
   in
