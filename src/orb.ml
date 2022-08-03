@@ -296,19 +296,19 @@ let diff_map sm1 sm2 =
   else
     let diff, rest =
       OpamStd.String.Map.fold (fun file d1 (diff, sm2) ->
-        match OpamStd.String.Map.find_opt file sm2 with
-        | Some d2 ->
-          let diff =
-            if d1 <> d2 then begin
-              log "%s d1 and d2 mismatch" file;
-              OpamStd.String.Map.add file (Both (d1, d2)) diff
-            end else diff
-          in
-          diff,
-          OpamStd.String.Map.remove file sm2
-        | None ->
-          log "diff map for %s not found in sm2" file;
-          OpamStd.String.Map.add file (First d1) diff, sm2)
+          match OpamStd.String.Map.find_opt file sm2 with
+          | Some d2 ->
+            let diff =
+              if d1 <> d2 then begin
+                log "%s d1 and d2 mismatch" file;
+                OpamStd.String.Map.add file (Both (d1, d2)) diff
+              end else diff
+            in
+            diff,
+            OpamStd.String.Map.remove file sm2
+          | None ->
+            log "diff map for %s not found in sm2" file;
+            OpamStd.String.Map.add file (First d1) diff, sm2)
         sm1 (OpamStd.String.Map.empty, sm2)
     in
     if OpamStd.String.Map.is_empty rest then
@@ -490,16 +490,16 @@ let execute_commands dirname prefix cmds =
       Unix.putenv "PATH" p';
       let r =
         List.fold_left (fun acc cmd_args ->
-          Result.bind acc (fun () ->
-            match cmd_args with
-            | cmd :: args ->
-              let cmd = Filename.quote_command cmd args in
-              let r = Sys.command cmd in
-              if r <> 0 then
-                Error (cmd ^ " exited with " ^ string_of_int r)
-              else
-                Ok ()
-            | [] -> Ok ()))
+            Result.bind acc (fun () ->
+                match cmd_args with
+                | cmd :: args ->
+                  let cmd = Filename.quote_command cmd args in
+                  let r = Sys.command cmd in
+                  if r <> 0 then
+                    Error (cmd ^ " exited with " ^ string_of_int r)
+                  else
+                    Ok ()
+                | [] -> Ok ()))
           (Ok ()) cmds
       in
       Unix.putenv "PATH" path;
@@ -602,7 +602,7 @@ let rebuild ~skip_system ~sw ~bidir out =
       OpamFilename.rmdir dirname;
       OpamFilename.mkdir dirname;
       OpamStd.Sys.at_exit (fun () ->
-        if not (OpamClientConfig.(!r.keep_build_dir)) then OpamFilename.rmdir dirname);
+          if not (OpamClientConfig.(!r.keep_build_dir)) then OpamFilename.rmdir dirname);
       let st = OpamSwitchState.update_package_metadata package opam st in
       (match OpamProcess.Job.run (download_and_extract_job st package dirname) with
        | Ok () -> ()
@@ -669,15 +669,7 @@ let add_repo s (name, url) =
   OpamRepositoryCommand.add s name url None
 
 let add_repos repos =
-  let repos = match repos with
-    | None | Some [] ->
-      [ OpamRepositoryName.of_string "default", "https://opam.ocaml.org" ]
-    | Some xs ->
-      List.map (fun s -> match String.split_on_char ':' s with
-          | name :: rest ->
-            OpamRepositoryName.of_string name, String.concat ":" rest
-          | _ -> failwith ("unknown repo: " ^ s)) xs
-  in
+  let repos = List.map (fun (n, u) -> OpamRepositoryName.of_string n, u) repos in
   let names = List.map fst repos in
   OpamGlobalState.with_ `Lock_none (fun gt ->
       OpamRepositoryState.with_ `Lock_write gt (fun rt ->
@@ -777,7 +769,13 @@ let build global_options disable_sandboxing build_options twice
   log "using root %S and switch %S" root sw;
   if not OpamClientConfig.(!r.keep_build_dir) then
     clean_switch := Some (switch, skip_system, bidir, sw);
-  let repos = add_repos repos in
+  let repos = 
+    let repos = match repos with
+      | None | Some [] -> [ "default", "https://opam.ocaml.org" ]
+      | Some xs -> xs
+    in
+    add_repos repos
+  in
   install_switch ~repos switch;
   OpamGlobalState.with_ `Lock_none @@ fun gt ->
   OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
@@ -813,53 +811,38 @@ let build global_options disable_sandboxing build_options twice
       let dirname = build_dir () in
       OpamFilename.rmdir dirname;
       OpamFilename.mkdir dirname;
-      let cleanup_dir () = OpamFilename.rmdir dirname in
+      OpamStd.Sys.at_exit (fun () ->
+          if not (OpamClientConfig.(!r.keep_build_dir)) then OpamFilename.rmdir dirname);
       (match OpamProcess.Job.run (download_and_extract_job st package dirname) with
        | Ok () -> ()
-       | Error msg ->
-         log "%s" msg;
-         cleanup_dir ();
-         exit 1);
+       | Error msg -> log "%s" msg; exit 1);
       (match OpamFile.OPAM.extended opam mirage_extra_repo repos_of_opam with
        | None -> ()
-       | Some Error `Msg m ->
-         log "error parsing extra repositories %s" m;
-         cleanup_dir ();
-         exit 1
+       | Some Error `Msg m -> log "error parsing extra repositories %s" m; exit 1
        | Some Ok repos ->
-         let repo_names =
-           add_repos (Some (List.map (fun (n, u) -> n ^ ":" ^ u) repos))
-         in
+         let repo_names = add_repos repos in
          OpamSwitchState.update_repositories gt (fun old_repos ->
-             repo_names @ old_repos) switch
-      );
+             repo_names @ old_repos) switch);
       drop_states ~gt ~rt ~st ();
       OpamGlobalState.with_ `Lock_write @@ fun gt ->
       OpamSwitchCommand.switch `Lock_none gt switch;
       drop_states ~gt ();
       (match execute_commands dirname prefix [ configure ; pre_build ] with
        | Ok () -> ();
-       | Error msg -> log "%s" msg; cleanup_dir (); exit 1);
+       | Error msg -> log "%s" msg; exit 1);
       OpamGlobalState.with_ `Lock_none @@ fun gt ->
       OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
       OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
       let st =
         match modify_opam_file st package opam dirname with
         | Ok st -> st
-        | Error msg ->
-          log "%s" msg;
-          cleanup_dir ();
-          exit 1
+        | Error msg -> log "%s" msg; exit 1
       in
       let st =
         match OpamProcess.Job.run (build_and_install st dirname package) with
         | Ok st -> st
-        | Error msg ->
-          log "%s" msg;
-          cleanup_dir ();
-          exit 1
+        | Error msg -> log "%s" msg; exit 1
       in
-      cleanup_dir ();
       drop_states ~gt ~rt ~st ();
     | Some Error `Msg m, _ ->
       log "error parsing %s: %s" mirage_configure m;
@@ -965,7 +948,7 @@ let build_cmd =
     mk_opt [ "repos" ] "REPOS"
       "Include only packages that took their origin from one of the given \
        repositories."
-      Arg.(some & list & string) None
+      Arg.(some & list & pair ~sep:':' string string) None
   in
   let switch_name =
     mk_opt [ "switch-name" ] "[NAME]"
