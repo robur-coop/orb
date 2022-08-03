@@ -5,7 +5,7 @@ https://reproducible-builds.org). It has two subcommands: build and rebuild.
 
 The orb build conducts a build of an opam package, and collects the build result
 (and hashes thereof) and the build input (or build info), consisting of:
-- build-environment (the environment variables plus OS/OS_DISTRIBUTION/OS_FAMILY/OS_VERSION)
+- build-environment (the environment variables plus OS/OS_DISTRIBUTION/OS_FAMILY/OS_VERSION/ORB_VERSION)
 - system-packages (the installed packages on the system)
 - opam-switch (opam switch export --full --freeze - a textual representation containing all installed opam packages)
 - *.build-hashes with maps of installed files to their hashes
@@ -13,11 +13,10 @@ The orb build conducts a build of an opam package, and collects the build result
 The orb rebuild takes this data as input and conducts a second build with the same environment, and compares that the hashes of the produced binaries are identical.
 
 The orb build also has a command-line flag "--twice" to conduct a build and a
-rebuild directly afterwards. For debugging reproducibility, a "--keep-build"
-(useful with opam's "--keep-build-dir") option is provided that allows to
-compare intermediate build products as well.
+rebuild directly afterwards. For debugging reproducibility, the "--keep-build-dir"
+option is provided that allows to compare intermediate build products as well.
 
-Please have a look at "--diffoscope", "--out", "--switch-name",
+Please have a look at "--out", "--switch-name",
 "--solver-timeout", "--date", and other command line parameters.
 
 It is currently used as a payload of
