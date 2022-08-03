@@ -220,7 +220,6 @@ let import_switch skip_system dir sw switch export =
   log "Switch %s created!"
     (OpamConsole.colorise `green (OpamSwitch.to_string switch));
   clean_switch := Some (switch, skip_system, dir, sw);
-  log "SOURCE_DATE_EPOCH is %s" (Unix.getenv "SOURCE_DATE_EPOCH");
   log "now importing switch";
   (* TODO fake-install opam-monorepo *)
   let st = OpamSwitchCommand.import st export in
@@ -515,7 +514,7 @@ let of_opam_value =
       if String.equal s "make" then
         Ok (Lazy.force OpamStateConfig.(!r.makecmd))
       else
-        Ok s
+        Error (`Msg ("unexpected variable " ^ String.escaped s))
     | _ -> Error (`Msg "expected a string or identifier")
   in
   function
