@@ -824,7 +824,6 @@ let repos_of_opam =
   in
   let extract_repo = function
     | { pelem = List { pelem = [ name ; url ] ; _ } ; _ } ->
-      begin match lbody with
       let* name = extract_string name in
       let* url = extract_string url in
       Ok (name, url)
