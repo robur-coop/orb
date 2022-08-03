@@ -6,7 +6,7 @@ homepage: "https://github.com/roburio/orb"
 bug-reports: "https://github.com/roburio/orb/issues"
 license: "LGPL-2.1-only WITH OCaml-LGPL-linking-exception"
 depends: [
-  "ocaml" {>= "4.05.0"}
+  "ocaml" {>= "4.10.0"}
   "dune" {>= "2.0"}
   "cmdliner" {>= "1.1.0"}
   "opam-client" {>= "2.1.2"}
