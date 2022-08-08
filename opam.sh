@@ -2,6 +2,7 @@
 
 #usage: opam config var prefix -> return $PREFIX
 #usage: opam config var lib -> return $PREFIX/lib
+#usage: opam config subst <filename> -> replace %{jobs}% with 1
 #usage: opam var prefix -> return $PREFIX
 #usage: opam var lib -> return $PREFIX/lib
 #usage: opam subst (do nothing)
@@ -25,6 +26,8 @@ elif [ $# = 3 ]; then
                 echo "$PREFIX"
             elif [ "$3" = "lib" ]; then
                 echo "$PREFIX/lib"
+            elif [ "$4" = "subst" ]; then
+                sed -i -e "s/%{jobs}%/1/g" $5
             else
                 exit 1
             fi
