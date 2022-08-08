@@ -2,7 +2,7 @@
 
 #usage: opam config var prefix -> return $PREFIX
 #usage: opam config var lib -> return $PREFIX/lib
-#usage: opam config subst <filename> -> replace %{jobs}% with 1
+#usage: opam config subst <filename> -> replace %{jobs}% with 1 in <filename>.in, output to <filename>
 #usage: opam var prefix -> return $PREFIX
 #usage: opam var lib -> return $PREFIX/lib
 #usage: opam subst (do nothing)
@@ -30,7 +30,7 @@ elif [ $# = 3 ]; then
                 exit 1
             fi
         elif [ "$2" = "subst" ]; then
-            sed -i -e "s/%{jobs}%/1/g" $3
+            sed "s/%{jobs}%/1/g" $3.in > $3
         else
             exit 1
         fi
