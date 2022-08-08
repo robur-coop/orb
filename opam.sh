@@ -26,11 +26,11 @@ elif [ $# = 3 ]; then
                 echo "$PREFIX"
             elif [ "$3" = "lib" ]; then
                 echo "$PREFIX/lib"
-            elif [ "$4" = "subst" ]; then
-                sed -i -e "s/%{jobs}%/1/g" $5
             else
                 exit 1
             fi
+        elif [ "$2" = "subst" ]; then
+            sed -i -e "s/%{jobs}%/1/g" $3
         else
             exit 1
         fi
