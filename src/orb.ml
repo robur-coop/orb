@@ -361,7 +361,7 @@ let copy_build_dir tgt src =
     ~dst:(OpamFilename.Dir.of_string target);
   target
 
-let common_start global_options disable_sandboxing build_options =
+let common_start global_options disable_sandboxing build_options cache =
   (* all environment variables need to be set/unset before the following line,
      which forces the lazy Unix.environment in OpamStd *)
   OpamArg.apply_global_options cli global_options;
@@ -386,6 +386,15 @@ let common_start global_options disable_sandboxing build_options =
         (OpamStd.Sys.guess_shell_compat ())
     in
     drop_states ~gt ~rt ();
+    (* this code block is here until ocaml/opam#5315 is solved, and we can pass through init_config *)
+    (match cache with
+     | None -> ()
+     | Some url ->
+       let config = OpamFile.Config.read config_f in
+       let config =
+         OpamFile.Config.with_dl_cache [ OpamUrl.of_string url ] config
+       in
+       OpamFile.Config.write config_f config);
   end;
   OpamStd.Sys.at_exit cleanup
 
@@ -633,14 +642,14 @@ let rebuild ~skip_system ~sw ~bidir out =
              OpamFilename.write
                OpamFilename.(create dir (Base.of_string "dune"))
                "(vendored_dirs *)");
-         let jobs = !OpamStateConfig.r.dl_jobs in
-         let cache_dir =
-           OpamRepositoryPath.download_cache gt.OpamStateTypes.root
+         let jobs = OpamFile.Config.dl_jobs gt.config
+         and cache_urls = OpamFile.Config.dl_cache gt.config
+         and cache_dir = OpamRepositoryPath.download_cache gt.root
          in
          let pull_one (url, dir, hashes) =
            let open OpamProcess.Job.Op in
            let out = OpamFilename.Dir.(of_string (to_string dirname ^ "/" ^ duni_dir ^ "/" ^ dir)) in
-           OpamRepository.pull_tree ~cache_dir dir out hashes [ url ] @@| function
+           OpamRepository.pull_tree ~cache_dir ~cache_urls dir out hashes [ url ] @@| function
            | Result _ | Up_to_date _ -> Ok ()
            | Not_available (_, long_msg) ->
              Error ("failed to download " ^ OpamUrl.to_string url ^ " into " ^ dir ^ ": " ^ long_msg)
@@ -738,7 +747,7 @@ let modify_opam_file st package opam dirname =
 
 (* Main function *)
 let build global_options disable_sandboxing build_options twice
-    repos out_dir switch_name epoch skip_system solver_timeout atom =
+    repos cache out_dir switch_name epoch skip_system solver_timeout atom =
   strip_env ~preserve:["HOME";"PATH"] ();
   Unix.putenv "PATH" (strip_path ());
   Unix.putenv "SOURCE_DATE_EPOCH"
@@ -770,11 +779,11 @@ let build global_options disable_sandboxing build_options twice
   let prefix = root ^ "/" ^ sw in
   Unix.putenv "PREFIX" prefix;
   Unix.putenv "PKG_CONFIG_PATH" (prefix ^ "/lib/pkgconfig");
-  common_start global_options disable_sandboxing build_options;
+  common_start global_options disable_sandboxing build_options cache;
   log "using root %S and switch %S" root sw;
   if not OpamClientConfig.(!r.keep_build_dir) then
     clean_switch := Some (switch, skip_system, bidir, sw);
-  let repos = 
+  let repos =
     let repos = match repos with
       | None | Some [] -> [ "default", "https://opam.ocaml.org" ]
       | Some xs -> xs
@@ -889,7 +898,7 @@ let build global_options disable_sandboxing build_options twice
     compare_builds changes changes' build1st build2nd
   end
 
-let rebuild global_options disable_sandboxing build_options skip_system ignore_env_difference build_info out_dir =
+let rebuild global_options disable_sandboxing build_options skip_system ignore_env_difference cache out_dir build_info =
   if build_info = "" then failwith "require build info directory" else begin
     strip_env ~preserve:["PATH"] ();
     Unix.putenv "PATH" (strip_path ());
@@ -905,7 +914,7 @@ let rebuild global_options disable_sandboxing build_options skip_system ignore_e
      else
        failwith "environment does not match");
     if not skip_system then install_system_packages stripped_build_info;
-    common_start global_options disable_sandboxing build_options;
+    common_start global_options disable_sandboxing build_options cache;
     OpamStateConfig.update ~unlock_base:true ();
     let changes', build2nd, package = rebuild ~skip_system ~sw ~bidir:build_info out in
     let pkg_name = OpamPackage.Name.to_string package.OpamPackage.name in
@@ -942,6 +951,11 @@ let disable_sandboxing =
     "Use a default configuration with sandboxing disabled. Use this at your \
      own risk, without sandboxing it is possible for a broken package script \
      to delete all your files."
+
+let cache =
+  mk_opt [ "cache" ] "[URL]"
+    "Use [URL] as download cache."
+    Arg.(some string) None
 
 let build_cmd =
   let doc = "Build opam packages and output build information for rebuilding" in
@@ -1002,7 +1016,7 @@ let build_cmd =
   in
   let term =
     Term.((const build $ global_options cli $ disable_sandboxing $ build_options cli
-           $ twice $ repos $ out_dir $ switch_name $ source_date_epoch $ skip_system
+           $ twice $ repos $ cache $ out_dir $ switch_name $ source_date_epoch $ skip_system
            $ solver_timeout $ atom_exact))
   and info = Cmd.info "build" ~man ~doc
   in
@@ -1027,7 +1041,7 @@ let rebuild_cmd =
   in
   let term =
     Term.((const rebuild $ global_options cli $ disable_sandboxing $ build_options cli
-           $ ignore_env_differences $ skip_system $ build_info $ out_dir))
+           $ ignore_env_differences $ skip_system $ cache $ out_dir $ build_info))
   and info = Cmd.info "rebuild" ~man ~doc
   in
   Cmd.v info term
