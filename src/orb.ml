@@ -445,16 +445,34 @@ let strip_env ?(preserve = []) () =
       if List.mem key preserve then () else unsetenv key)
     (Unix.environment ())
 
+(* from opamSolution.ml *)
+let display_error action package error =
+  let disp =
+    OpamConsole.header_error "while %s %s" action (OpamPackage.to_string package)
+  in
+  match error with
+  | Sys.Break | OpamParallel.Aborted -> ()
+  | Failure s -> disp "%s" s
+  | OpamSystem.Process_error e -> disp "%s" (OpamProcess.string_of_result e)
+  | e ->
+    disp "%s" (Printexc.to_string e);
+    if OpamConsole.debug () then
+      OpamConsole.errmsg "%s" (OpamStd.Exn.pretty_backtrace e)
+
 let download_and_extract_job st package dirname =
   let open OpamProcess.Job.Op in
   OpamAction.download_package st package @@+ function
-  | Some (_, s) -> Done (Error ("failed to download " ^ s))
+  | Some (_, s) ->
+    display_error "download" package (Failure s);
+    Done (Error ("failed to download " ^ s))
   | None ->
     let src = OpamSwitchState.source_dir st package in
     OpamFilename.copy_dir ~src ~dst:dirname;
     OpamAction.prepare_package_source st package dirname @@| function
     | None -> Ok ()
-    | Some e -> Error ("failed to extract " ^ Printexc.to_string e)
+    | Some e ->
+      display_error "preparing source" package e;
+      Error ("failed to extract " ^ Printexc.to_string e)
 
 let duniverse_dirs =
   let open OpamParserTypes.FullPos in
@@ -549,7 +567,9 @@ let build_and_install st dirname package =
   let pkg_name = OpamPackage.to_string package in
   log "now building %s" pkg_name;
   OpamAction.build_package st dirname package @@+ function
-  | Some exn -> Done (Error ("failed to build package " ^ pkg_name ^ ": " ^ Printexc.to_string exn))
+  | Some exn ->
+    display_error "compiling" package exn;
+    Done (Error ("failed to build package " ^ pkg_name ^ ": " ^ Printexc.to_string exn))
   | None ->
     log "built %s, now installing" pkg_name;
     OpamAction.install_package st ~build_dir:dirname package @@| function
@@ -560,7 +580,9 @@ let build_and_install st dirname package =
         OpamStd.Option.map_default add_conf st.conf_files conf
       in
       Ok (OpamSwitchAction.add_to_installed {st with conf_files} ~root:true package)
-    | Right exn -> Error ("failed to install package " ^ pkg_name ^ ": " ^ Printexc.to_string exn)
+    | Right exn ->
+      display_error "installing" package exn;
+      Error ("failed to install package " ^ pkg_name ^ ": " ^ Printexc.to_string exn)
 
 let location_of_opam =
   let open OpamParserTypes.FullPos in
