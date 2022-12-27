@@ -1,7 +1,6 @@
 (executable
  (name orb)
  (public_name orb)
- (modules orb)
  (foreign_stubs
   (language c)
   (names orb_stubs))

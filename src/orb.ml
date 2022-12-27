@@ -61,6 +61,7 @@ let dot_build = "build"
 
 (* custom opam extensions *)
 let opam_monorepo_duni = "x-opam-monorepo-duniverse-dirs"
+let orb_deps = "x-orb-dependencies"
 let mirage_opam_lock = "x-mirage-opam-lock-location"
 let mirage_configure = "x-mirage-configure"
 let mirage_pre_build = "x-mirage-pre-build"
@@ -765,6 +766,16 @@ let modify_opam_file st package opam dirname =
     | None -> Error "expected duniverse-dirs to be present"
     | Some v ->
       let opam = OpamFile.OPAM.add_extension opam opam_monorepo_duni v in
+      let opam =
+        try
+          let deps = Duni_deps.build_graph st package opam_lock opam in
+          let deps = Duni_deps.deps_opam v.pos deps in
+          OpamFile.OPAM.add_extension opam orb_deps deps
+        with
+        | Invalid_argument e ->
+          log "error in duni_deps: %s" e;
+          opam
+      in
       Ok (OpamSwitchState.update_package_metadata package opam st)
 
 (* Main function *)
