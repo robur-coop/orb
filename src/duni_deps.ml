@@ -66,15 +66,27 @@ let build_graph st package opam_lock opam =
       if OpamPackage.Name.Set.mem name visited then
         go acc visited
       else begin
-        let pkg = OpamPackage.Name.Map.find name map in
-        let opam = OpamSwitchState.opam st pkg in
-        let direct_deps = set_of_formula map (deps opam) in
-        let acc =
-          M.add (OpamPackage.Name.to_string name)
-            (List.map OpamPackage.Name.to_string (OpamPackage.Name.Set.elements direct_deps)) acc
+        let acc, visited =
+          try
+            let pkg = OpamPackage.Name.Map.find name map in
+            let opam =
+              try
+                OpamSwitchState.opam st pkg
+              with Not_found ->
+                let pkg = OpamSwitchState.get_package st name in
+                OpamSwitchState.opam st pkg
+            in
+            let direct_deps = set_of_formula map (deps opam) in
+            let acc =
+              M.add (OpamPackage.Name.to_string name)
+                (List.map OpamPackage.Name.to_string (OpamPackage.Name.Set.elements direct_deps)) acc
+            in
+            let visited = OpamPackage.Name.Set.add name visited in
+            OpamPackage.Name.Set.iter (fun name -> Queue.push name q) direct_deps;
+            acc, visited
+          with Not_found ->
+            invalid_arg ("build_graph: couldn't find package" ^ OpamPackage.Name.to_string name)
         in
-        let visited = OpamPackage.Name.Set.add name visited in
-        OpamPackage.Name.Set.iter (fun name -> Queue.push name q) direct_deps;
         go acc visited
       end
   in
