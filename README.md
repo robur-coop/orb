@@ -20,7 +20,7 @@ Please have a look at "--out", "--switch-name",
 "--solver-timeout", "--date", and other command line parameters.
 
 It is currently used as a payload of
-[builder-worker](https://github.com/roburio/builder) to run the
+[builder-worker](https://github.com/robur-coop/builder) to run the
 [reproducible MirageOS unikernels](https://builds.robur.coop) infrastructure.
 
 Binary packages for different platforms (Debian, Ubuntu, FreeBSD) are available
@@ -29,12 +29,12 @@ at https://builds.robur.coop
 ## Install & use
 
 ```
-$ opam pin git+https://github.com/roburio/orb#next
+$ opam pin git+https://github.com/robur-coop/orb#next
 $ orb build --twice --repos=default:https://opam.ocaml.org cmdliner
 ```
 
 Simple (and fast) failing and successful reproducible opam packages are in the
-[reproducible-testing-repo](https://github.com/roburio/reproducible-testing-repo).
+[reproducible-testing-repo](https://github.com/robur-coop/reproducible-testing-repo).
 
 ## History
 
