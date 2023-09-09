@@ -4,7 +4,7 @@ maintainer: "Robur Team <team@robur.coop>"
 authors: [ "Raja Boujbel <rjbou@ocamlpro.com>" "Reynir Björnsson <reynir@reynir.dk" "Hannes Mehnert <hannes@mehnert.org>" ]
 homepage: "https://github.com/roburio/orb"
 bug-reports: "https://github.com/roburio/orb/issues"
-license: "LGPL-2.1-only WITH OCaml-LGPL-linking-exception"
+license: "ISC"
 depends: [
   "ocaml" {>= "4.10.0"}
   "dune" {>= "2.0"}

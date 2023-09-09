@@ -35,3 +35,10 @@ $ orb build --twice --repos=default:https://opam.ocaml.org cmdliner
 
 Simple (and fast) failing and successful reproducible opam packages are in the
 [reproducible-testing-repo](https://github.com/roburio/reproducible-testing-repo).
+
+## History
+
+The initial development was done by Raja Boujbel (working at OCamlPro) in spring 2019 at the MirageOS retreat in Marrakesh.
+Another iteration was done in December 2019 by Hannes Mehnert at the reproducible builds summit.
+In 2020 and 2021, Reynir Björnsson contributed together with Hannes Mehnert more adjustments to use orb on FreeBSD and Debian for conducting reproducible builds of MirageOS unikernels.
+In 2022, the robur team contributed work to use orb with MirageOS 4, which uses opam-monorepo.
