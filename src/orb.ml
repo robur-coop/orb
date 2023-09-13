@@ -780,7 +780,14 @@ let modify_opam_file st package opam dirname =
 
 (* Main function *)
 let build global_options disable_sandboxing build_options twice
-    repos cache out_dir switch_name epoch skip_system solver_timeout atom =
+    repos cache out_dir switch_name epoch skip_system solver_timeout atom
+    latest =
+  let () =
+    match latest, atom with
+    | true, (_package, Some (`Eq, _version)) ->
+      failwith ">:(" (* FIXME *)
+    | _ -> ()
+  in
   strip_env ~preserve:["HOME";"PATH"] ();
   Unix.putenv "PATH" (strip_path ());
   Unix.putenv "SOURCE_DATE_EPOCH"
@@ -827,20 +834,25 @@ let build global_options disable_sandboxing build_options twice
   OpamGlobalState.with_ `Lock_none @@ fun gt ->
   OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
   OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
-  let package =
-    match atom with
-    | name, None ->
-      begin try OpamSwitchState.get_package st name with Not_found ->
+  let package, atom =
+    match latest, atom with
+    | false, (name, None) ->
+      begin try OpamSwitchState.get_package st name, atom with Not_found ->
         log "opam package %s not found" (OpamPackage.Name.to_string name); exit 1
       end
-    | _, Some (`Eq, _) ->
-      let atom = (atom :> OpamFormula.atom) in
-      let packages = OpamSwitchState.packages_of_atoms st [ atom ] in
+    | true, (name, None) ->
+      begin match OpamPackage.max_version (Lazy.force st.available_packages) name with
+        | package -> package, (name, Some (`Eq, package.version))
+        | exception Not_found ->
+          log "opam package %s not found" (OpamPackage.Name.to_string name); exit 1
+      end
+    | _, (_, Some (`Eq, _)) -> (* we error out earlier on latest = true in this case *)
+      let packages = OpamSwitchState.packages_of_atoms st [ (atom :> OpamFormula.atom) ] in
       if OpamPackage.Set.cardinal packages = 1 then
-        OpamPackage.Set.choose packages
+        OpamPackage.Set.choose packages, atom
       else begin
         log "expecting exactly one, but found %d solutions for %s"
-          (OpamPackage.Set.cardinal packages) (OpamFormula.string_of_atom atom);
+          (OpamPackage.Set.cardinal packages) (OpamFormula.string_of_atom (atom :> OpamFormula.atom));
         exit 1
       end
   in
@@ -1027,6 +1039,9 @@ let build_cmd =
       "use the provided solver timeout instead of the default (sets OPAMSOLVERTIMEOUT)"
       Arg.(some string) None
   in
+  let latest =
+    mk_flag [ "latest" ] "build the latest version"
+  in
   let atom_exact =
     let atom_exact =
       let parse s =
@@ -1050,7 +1065,7 @@ let build_cmd =
   let term =
     Term.((const build $ global_options cli $ disable_sandboxing $ build_options cli
            $ twice $ repos $ cache $ out_dir $ switch_name $ source_date_epoch $ skip_system
-           $ solver_timeout $ atom_exact))
+           $ solver_timeout $ atom_exact $ latest))
   and info = Cmd.info "build" ~man ~doc
   in
   Cmd.v info term
