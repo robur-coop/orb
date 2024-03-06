@@ -811,7 +811,6 @@ let build global_options disable_sandboxing build_options twice
   let root = Option.default (Unix.getenv "HOME" ^ "/.opam") opam_root in
   let prefix = root ^ "/" ^ sw in
   Unix.putenv "PREFIX" prefix;
-  Unix.putenv "PKG_CONFIG_PATH" (prefix ^ "/lib/pkgconfig");
   common_start global_options disable_sandboxing build_options cache;
   log "using root %S and switch %S" root sw;
   if not OpamClientConfig.(!r.keep_build_dir) then
