@@ -85,7 +85,7 @@ let build_graph st package opam_lock opam =
             OpamPackage.Name.Set.iter (fun name -> Queue.push name q) direct_deps;
             acc, visited
           with Not_found ->
-            invalid_arg ("build_graph: couldn't find package" ^ OpamPackage.Name.to_string name)
+            invalid_arg ("build_graph: couldn't find package " ^ OpamPackage.Name.to_string name)
         in
         go acc visited
       end
