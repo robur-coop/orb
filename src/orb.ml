@@ -77,16 +77,8 @@ let custom_env_keys = [
   "OS" ; "OS_DISTRIBUTION" ; "OS_VERSION" ; "OS_FAMILY" ; "SWITCH_PATH" ; "ORB_DATA"
 ]
 
-type env_vars = {
-  os : string option ;
-  os_distribution : string option ;
-  os_version : string option ;
-  os_family : string option ;
-  arch : string option ;
-}
-
 let retrieve_opam_vars gt_vars = {
-  os = OpamSysPoll.os gt_vars ;
+  Common.os = OpamSysPoll.os gt_vars ;
   os_distribution = OpamSysPoll.os_distribution gt_vars ;
   os_version = OpamSysPoll.os_version gt_vars ;
   os_family = OpamSysPoll.os_family gt_vars ;
@@ -94,7 +86,7 @@ let retrieve_opam_vars gt_vars = {
 }
 
 let custom_env vars s = [
-  "OS", vars.os;
+  "OS", vars.Common.os;
   "OS_DISTRIBUTION", vars.os_distribution;
   "OS_VERSION", vars.os_version;
   "OS_FAMILY", vars.os_family;
@@ -194,8 +186,8 @@ let cleanup () =
     let gt_vars =
       OpamGlobalState.with_ `Lock_none (fun { OpamStateTypes.global_variables; _ } -> global_variables)
     in
-    let vars = retrieve_opam_vars gt_vars in
-    output_system_packages_and_env ~skip_system ~os:vars.os ~os_family:vars.os_family dir (create_env vars sw);
+    let env_vars = retrieve_opam_vars gt_vars in
+    output_system_packages_and_env ~skip_system ~os:env_vars.os ~os_family:env_vars.os_family dir (create_env env_vars sw);
     export switch dir;
     remove_switch switch;
     OpamFilename.rmdir
@@ -761,7 +753,7 @@ let repos_of_opam =
     Ok (List.rev data)
   | _ -> Error (`Msg "expected a list")
 
-let modify_opam_file st package opam dirname =
+let modify_opam_file vars st package opam dirname =
   match OpamFile.OPAM.extended opam mirage_opam_lock location_of_opam with
   | None -> Ok st
   | Some Error `Msg s -> Error ("error retrieving opam-lock-location " ^ s);
@@ -776,7 +768,7 @@ let modify_opam_file st package opam dirname =
       let opam = OpamFile.OPAM.add_extension opam opam_monorepo_duni v in
       let opam =
         try
-          let deps = Duni_deps.build_graph st package opam_lock opam in
+          let deps = Duni_deps.build_graph vars st package opam_lock opam in
           let deps = Duni_deps.deps_opam v.pos deps in
           OpamFile.OPAM.add_extension opam orb_deps deps
         with
@@ -841,6 +833,10 @@ let build global_options disable_sandboxing build_options twice
   OpamGlobalState.with_ `Lock_none @@ fun gt ->
   OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
   OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
+  let env_vars =
+    let gt_vars = gt.OpamStateTypes.global_variables in
+    retrieve_opam_vars gt_vars
+  in
   let package, atom =
     match latest, atom with
     | false, (name, None) ->
@@ -903,7 +899,7 @@ let build global_options disable_sandboxing build_options twice
       OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
       OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
       let st =
-        match modify_opam_file st package opam dirname with
+        match modify_opam_file env_vars st package opam dirname with
         | Ok st -> st
         | Error msg -> log "%s" msg; exit 1
       in
@@ -934,11 +930,7 @@ let build global_options disable_sandboxing build_options twice
     else None
   in
   if OpamClientConfig.(!r.keep_build_dir) then begin
-    let gt_vars =
-      OpamGlobalState.with_ `Lock_none (fun { OpamStateTypes.global_variables; _ } -> global_variables)
-    in
-    let vars = retrieve_opam_vars gt_vars in
-    output_system_packages_and_env ~skip_system ~os:vars.os ~os_family:vars.os_family bidir (create_env vars sw);
+    output_system_packages_and_env ~skip_system ~os:env_vars.os ~os_family:env_vars.os_family bidir (create_env env_vars sw);
     export switch bidir;
   end;
   cleanup ();
