@@ -8,14 +8,19 @@
    the transitive map we need the repository state and use the picked versions
 *)
 
-let deps opam =
+let deps vars opam =
   let depends = OpamFile.OPAM.depends opam in
   let env var = match OpamVariable.Full.to_string var with
-    | "monorepo" | "vendor" -> Some (OpamTypes.B true)
-    | "build" | "with-test" | "dev" | "with-doc" | "post" -> Some (B false)
+    | "monorepo" | "vendor" | "post" -> Some (OpamTypes.B true)
+    | "build" | "with-test" | "dev" | "with-doc" -> Some (B false)
+    | "os" -> Option.map (fun x -> OpamTypes.S x) vars.Common.os
+    | "os-family" -> Option.map (fun x -> OpamTypes.S x) vars.Common.os_family
+    | "os-distribution" -> Option.map (fun x -> OpamTypes.S x) vars.Common.os_distribution
+    | "os-version" -> Option.map (fun x -> OpamTypes.S x) vars.Common.os_version
+    | "arch" -> Option.map (fun x -> OpamTypes.S x) vars.Common.arch
     | _ -> None
   in
-  OpamFilter.filter_formula ~default:false env depends
+  OpamFilter.filter_formula env depends
 
 let map_of_formula f =
   let v = function
@@ -56,8 +61,8 @@ let set_of_formula map f =
 
 module M = Map.Make(String)
 
-let build_graph st package opam_lock opam =
-  let map = map_of_formula (deps opam_lock) in
+let build_graph vars st package opam_lock opam =
+  let map = map_of_formula (deps vars opam_lock) in
   let q = Queue.create () in
   let rec go acc visited =
     match Queue.take_opt q with
@@ -76,7 +81,7 @@ let build_graph st package opam_lock opam =
                 let pkg = OpamSwitchState.get_package st name in
                 OpamSwitchState.opam st pkg
             in
-            let direct_deps = set_of_formula map (deps opam) in
+            let direct_deps = set_of_formula map (deps vars opam) in
             let acc =
               M.add (OpamPackage.Name.to_string name)
                 (List.map OpamPackage.Name.to_string (OpamPackage.Name.Set.elements direct_deps)) acc
@@ -91,7 +96,7 @@ let build_graph st package opam_lock opam =
       end
   in
   let direct_deps =
-    let direct_deps = set_of_formula map (deps opam) in
+    let direct_deps = set_of_formula map (deps vars opam) in
     if OpamPackage.Name.(Set.mem (of_string "mirage-solo5") direct_deps) &&
        OpamPackage.Name.(Map.mem (of_string "ocaml-solo5") map) then
       OpamPackage.Name.(Set.add (of_string "ocaml-solo5") direct_deps)

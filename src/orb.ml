@@ -77,20 +77,29 @@ let custom_env_keys = [
   "OS" ; "OS_DISTRIBUTION" ; "OS_VERSION" ; "OS_FAMILY" ; "SWITCH_PATH" ; "ORB_DATA"
 ]
 
-let custom_env gt_vars s = [
-  "OS", OpamSysPoll.os gt_vars;
-  "OS_DISTRIBUTION", OpamSysPoll.os_distribution gt_vars;
-  "OS_VERSION", OpamSysPoll.os_version gt_vars;
-  "OS_FAMILY", OpamSysPoll.os_family gt_vars;
+let retrieve_opam_vars gt_vars = {
+  Common.os = OpamSysPoll.os gt_vars ;
+  os_distribution = OpamSysPoll.os_distribution gt_vars ;
+  os_version = OpamSysPoll.os_version gt_vars ;
+  os_family = OpamSysPoll.os_family gt_vars ;
+  arch = OpamSysPoll.arch gt_vars ;
+}
+
+let custom_env vars s = [
+  "OS", vars.Common.os;
+  "OS_DISTRIBUTION", vars.os_distribution;
+  "OS_VERSION", vars.os_version;
+  "OS_FAMILY", vars.os_family;
+  "ARCH", vars.arch;
   "ORB_DATA", Some orb_data;
   "SWITCH_PATH", s
 ]
 
-let create_env gt_vars (s : string) =
+let create_env vars (s : string) =
   Array.to_list (Unix.environment () ) @
   List.fold_left
     (fun acc (k, v) -> match v with None -> acc | Some v -> (k^"="^v)::acc)
-    [] (custom_env gt_vars (Some s))
+    [] (custom_env vars (Some s))
 
 let env_to_string env =
   String.concat "\n" env
@@ -104,51 +113,32 @@ let env_of_string str =
       | _ -> Printf.printf "bad environment line %s\n" line ; acc)
     [] lines
 
-let dump_system_packages filename =
-  let gt_vars =
-    OpamGlobalState.with_ `Lock_none (fun { OpamStateTypes.global_variables; _ } -> global_variables)
-  in
-  match OpamSysPoll.os_family gt_vars with
-  | Some "bsd" ->
-    begin match OpamSysPoll.os_distribution gt_vars with
-      | Some "freebsd" ->
-        let r = Sys.command ("/usr/sbin/pkg query %n-%v > " ^ filename) in
-        if r <> 0 then log "failed to dump system packages (exit %d)" r
-      | Some distrib ->
-        log "unsupported OS for host system packages (bsd %s)" distrib
-      | None ->
-        log "unsupported OS (no system packages), bsd without distribution"
-    end
-  | Some "debian" ->
+let dump_system_packages ~os ~os_family filename =
+  match os, os_family with
+  | Some "freebsd", _ ->
+    let r = Sys.command ("/usr/sbin/pkg query %n-%v > " ^ filename) in
+    if r <> 0 then log "failed to dump system packages (exit %d)" r
+  | Some "linux", Some "debian" ->
     let r = Sys.command ("dpkg-query --showformat='${Package}=${Version}\n' -W > " ^ filename) in
     if r <> 0 then log "failed to dump system packages (exit %d)" r
-  | Some family ->
-    log "unsupported OS for host system packages %s" family
-  | None ->
-    log "unsupported OS (no system packages), no family"
+  | Some os, Some family ->
+    log "unsupported OS for host system packages (os=%s, os-family=%s)" os family
+  | _, _ ->
+    log "unsupported OS (no system packages)"
 
-let restore_system_packages filename =
-  let gt_vars =
-    OpamGlobalState.with_ `Lock_none (fun { OpamStateTypes.global_variables; _ } -> global_variables)
-  in
-  match OpamSysPoll.os_family gt_vars with
-  | Some "bsd" ->
-    begin match OpamSysPoll.os_distribution gt_vars with
-      | Some "freebsd" ->
-        let r = Sys.command ("cat " ^ filename ^ " | xargs /usr/sbin/pkg install -y") in
-        if r <> 0 then log "couldn't install packages"
-      | Some distrib ->
-        log "unsupported OS for host system packages (bsd %s)" distrib
-      | None ->
-        log "unsupported OS (no system packages), bsd without distribution"
-    end
-  | Some "debian" ->
+let install_system_packages ~os ~os_family dir =
+  let filename = Printf.sprintf "%s/%s" dir dot_packages in
+  match os, os_family with
+  | Some "freebsd", _ ->
+    let r = Sys.command ("cat " ^ filename ^ " | xargs /usr/sbin/pkg install -y") in
+    if r <> 0 then log "couldn't install packages"
+  | Some "linux", Some "debian" ->
     let r = Sys.command ("cat " ^ filename ^ " | xargs apt-get install -y") in
     if r <> 0 then log "couldn't install packages"
-  | Some family ->
-    log "unsupported OS for host system packages %s" family
-  | None ->
-    log "unsupported OS (no system packages), no family"
+  | Some os, Some family ->
+    log "unsupported OS for host system packages (os=%s, os-family=%s)" os family
+  | _, _ ->
+    log "unsupported OS (no system packages)"
 
 let remove_switch switch =
   OpamGlobalState.with_ `Lock_write @@ fun gt ->
@@ -157,7 +147,7 @@ let remove_switch switch =
   log "Switch %s removed"
     (OpamSwitch.to_string switch |> OpamConsole.colorise `blue)
 
-let output_system_packages_and_env ~skip_system dir env =
+let output_system_packages_and_env ~skip_system ~os ~os_family dir env =
   let prefix = OpamFilename.Dir.of_string dir in
   (* output metadata: hashes, environment, system packages *)
   let filename file =
@@ -167,7 +157,7 @@ let output_system_packages_and_env ~skip_system dir env =
   write_file fn (env_to_string env);
   if not skip_system then begin
     let pkgs = filename dot_packages in
-    dump_system_packages (OpamFilename.to_string pkgs)
+    dump_system_packages ~os ~os_family (OpamFilename.to_string pkgs)
   end
 
 let drop_states ?gt ?rt ?st () =
@@ -196,7 +186,8 @@ let cleanup () =
     let gt_vars =
       OpamGlobalState.with_ `Lock_none (fun { OpamStateTypes.global_variables; _ } -> global_variables)
     in
-    output_system_packages_and_env ~skip_system dir (create_env gt_vars sw);
+    let env_vars = retrieve_opam_vars gt_vars in
+    output_system_packages_and_env ~skip_system ~os:env_vars.os ~os_family:env_vars.os_family dir (create_env env_vars sw);
     export switch dir;
     remove_switch switch;
     OpamFilename.rmdir
@@ -226,7 +217,8 @@ let os_matches env =
   let gt_vars =
     OpamGlobalState.with_ `Lock_none (fun { OpamStateTypes.global_variables; _ } -> global_variables)
   in
-  List.for_all (fun (k, v) -> opt_compare k v) (custom_env gt_vars None)
+  let vars = retrieve_opam_vars gt_vars in
+  List.for_all (fun (k, v) -> opt_compare k v) (custom_env vars None)
 
 (** Steps *)
 let import_switch skip_system dir sw switch export =
@@ -357,10 +349,6 @@ let output_artifacts sw_prefix dir pkg changes =
   let fn = filename OpamPackage.(Name.to_string pkg.name ^ dot_hash) in
   log "writing %s" (OpamFilename.to_string fn);
   write_file fn (OpamFile.Changes.write_to_string changes)
-
-let install_system_packages dir =
-  let filename = Printf.sprintf "%s/%s" dir dot_packages in
-  restore_system_packages filename
 
 let find_build_dir dir =
   let dir = Printf.sprintf "%s/%s" dir dot_build in
@@ -726,7 +714,10 @@ let add_repos repos =
           let failed, _rt = OpamRepositoryCommand.update_with_auto_upgrade rt names in
           List.iter
             (fun rn -> log "repo update failed for %s" (OpamRepositoryName.to_string rn))
-            failed
+            failed;
+          match failed with
+          | [] -> ()
+          | _ -> exit 1
         ));
   names
 
@@ -765,7 +756,7 @@ let repos_of_opam =
     Ok (List.rev data)
   | _ -> Error (`Msg "expected a list")
 
-let modify_opam_file st package opam dirname =
+let modify_opam_file vars st package opam dirname =
   match OpamFile.OPAM.extended opam mirage_opam_lock location_of_opam with
   | None -> Ok st
   | Some Error `Msg s -> Error ("error retrieving opam-lock-location " ^ s);
@@ -780,7 +771,7 @@ let modify_opam_file st package opam dirname =
       let opam = OpamFile.OPAM.add_extension opam opam_monorepo_duni v in
       let opam =
         try
-          let deps = Duni_deps.build_graph st package opam_lock opam in
+          let deps = Duni_deps.build_graph vars st package opam_lock opam in
           let deps = Duni_deps.deps_opam v.pos deps in
           OpamFile.OPAM.add_extension opam orb_deps deps
         with
@@ -845,6 +836,10 @@ let build global_options disable_sandboxing build_options twice
   OpamGlobalState.with_ `Lock_none @@ fun gt ->
   OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
   OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
+  let env_vars =
+    let gt_vars = gt.OpamStateTypes.global_variables in
+    retrieve_opam_vars gt_vars
+  in
   let package, atom =
     match latest, atom with
     | false, (name, None) ->
@@ -907,7 +902,7 @@ let build global_options disable_sandboxing build_options twice
       OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
       OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
       let st =
-        match modify_opam_file st package opam dirname with
+        match modify_opam_file env_vars st package opam dirname with
         | Ok st -> st
         | Error msg -> log "%s" msg; exit 1
       in
@@ -938,7 +933,7 @@ let build global_options disable_sandboxing build_options twice
     else None
   in
   if OpamClientConfig.(!r.keep_build_dir) then begin
-    output_system_packages_and_env ~skip_system bidir (create_env gt.global_variables sw);
+    output_system_packages_and_env ~skip_system ~os:env_vars.os ~os_family:env_vars.os_family bidir (create_env env_vars sw);
     export switch bidir;
   end;
   cleanup ();
@@ -969,7 +964,8 @@ let rebuild global_options disable_sandboxing build_options skip_system ignore_e
        log "environment differs (ignored)"
      else
        failwith "environment does not match");
-    if not skip_system then install_system_packages stripped_build_info;
+    let os = List.assoc_opt "OS" env and os_family = List.assoc_opt "OS_FAMILY" env in
+    if not skip_system then install_system_packages ~os ~os_family stripped_build_info;
     common_start global_options disable_sandboxing build_options cache;
     OpamStateConfig.update ~unlock_base:true ();
     let changes', build2nd, package = rebuild ~skip_system ~sw ~bidir:build_info out in
