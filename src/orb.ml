@@ -104,51 +104,32 @@ let env_of_string str =
       | _ -> Printf.printf "bad environment line %s\n" line ; acc)
     [] lines
 
-let dump_system_packages filename =
-  let gt_vars =
-    OpamGlobalState.with_ `Lock_none (fun { OpamStateTypes.global_variables; _ } -> global_variables)
-  in
-  match OpamSysPoll.os_family gt_vars with
-  | Some "bsd" ->
-    begin match OpamSysPoll.os_distribution gt_vars with
-      | Some "freebsd" ->
-        let r = Sys.command ("/usr/sbin/pkg query %n-%v > " ^ filename) in
-        if r <> 0 then log "failed to dump system packages (exit %d)" r
-      | Some distrib ->
-        log "unsupported OS for host system packages (bsd %s)" distrib
-      | None ->
-        log "unsupported OS (no system packages), bsd without distribution"
-    end
-  | Some "debian" ->
+let dump_system_packages ~os ~os_family filename =
+  match os, os_family with
+  | Some "freebsd", _ ->
+    let r = Sys.command ("/usr/sbin/pkg query %n-%v > " ^ filename) in
+    if r <> 0 then log "failed to dump system packages (exit %d)" r
+  | Some "linux", Some "debian" ->
     let r = Sys.command ("dpkg-query --showformat='${Package}=${Version}\n' -W > " ^ filename) in
     if r <> 0 then log "failed to dump system packages (exit %d)" r
-  | Some family ->
-    log "unsupported OS for host system packages %s" family
-  | None ->
-    log "unsupported OS (no system packages), no family"
+  | Some os, Some family ->
+    log "unsupported OS for host system packages (os=%s, os-family=%s)" os family
+  | _, _ ->
+    log "unsupported OS (no system packages)"
 
-let restore_system_packages filename =
-  let gt_vars =
-    OpamGlobalState.with_ `Lock_none (fun { OpamStateTypes.global_variables; _ } -> global_variables)
-  in
-  match OpamSysPoll.os_family gt_vars with
-  | Some "bsd" ->
-    begin match OpamSysPoll.os_distribution gt_vars with
-      | Some "freebsd" ->
-        let r = Sys.command ("cat " ^ filename ^ " | xargs /usr/sbin/pkg install -y") in
-        if r <> 0 then log "couldn't install packages"
-      | Some distrib ->
-        log "unsupported OS for host system packages (bsd %s)" distrib
-      | None ->
-        log "unsupported OS (no system packages), bsd without distribution"
-    end
-  | Some "debian" ->
+let install_system_packages ~os ~os_family dir =
+  let filename = Printf.sprintf "%s/%s" dir dot_packages in
+  match os, os_family with
+  | Some "freebsd", _ ->
+    let r = Sys.command ("cat " ^ filename ^ " | xargs /usr/sbin/pkg install -y") in
+    if r <> 0 then log "couldn't install packages"
+  | Some "linux", Some "debian" ->
     let r = Sys.command ("cat " ^ filename ^ " | xargs apt-get install -y") in
     if r <> 0 then log "couldn't install packages"
-  | Some family ->
-    log "unsupported OS for host system packages %s" family
-  | None ->
-    log "unsupported OS (no system packages), no family"
+  | Some os, Some family ->
+    log "unsupported OS for host system packages (os=%s, os-family=%s)" os family
+  | _, _ ->
+    log "unsupported OS (no system packages)"
 
 let remove_switch switch =
   OpamGlobalState.with_ `Lock_write @@ fun gt ->
@@ -157,7 +138,7 @@ let remove_switch switch =
   log "Switch %s removed"
     (OpamSwitch.to_string switch |> OpamConsole.colorise `blue)
 
-let output_system_packages_and_env ~skip_system dir env =
+let output_system_packages_and_env ~skip_system ~os ~os_family dir env =
   let prefix = OpamFilename.Dir.of_string dir in
   (* output metadata: hashes, environment, system packages *)
   let filename file =
@@ -167,7 +148,7 @@ let output_system_packages_and_env ~skip_system dir env =
   write_file fn (env_to_string env);
   if not skip_system then begin
     let pkgs = filename dot_packages in
-    dump_system_packages (OpamFilename.to_string pkgs)
+    dump_system_packages ~os ~os_family (OpamFilename.to_string pkgs)
   end
 
 let drop_states ?gt ?rt ?st () =
@@ -196,7 +177,8 @@ let cleanup () =
     let gt_vars =
       OpamGlobalState.with_ `Lock_none (fun { OpamStateTypes.global_variables; _ } -> global_variables)
     in
-    output_system_packages_and_env ~skip_system dir (create_env gt_vars sw);
+    let os = OpamSysPoll.os gt_vars and os_family = OpamSysPoll.os_family gt_vars in
+    output_system_packages_and_env ~skip_system ~os ~os_family dir (create_env gt_vars sw);
     export switch dir;
     remove_switch switch;
     OpamFilename.rmdir
@@ -357,10 +339,6 @@ let output_artifacts sw_prefix dir pkg changes =
   let fn = filename OpamPackage.(Name.to_string pkg.name ^ dot_hash) in
   log "writing %s" (OpamFilename.to_string fn);
   write_file fn (OpamFile.Changes.write_to_string changes)
-
-let install_system_packages dir =
-  let filename = Printf.sprintf "%s/%s" dir dot_packages in
-  restore_system_packages filename
 
 let find_build_dir dir =
   let dir = Printf.sprintf "%s/%s" dir dot_build in
@@ -938,7 +916,11 @@ let build global_options disable_sandboxing build_options twice
     else None
   in
   if OpamClientConfig.(!r.keep_build_dir) then begin
-    output_system_packages_and_env ~skip_system bidir (create_env gt.global_variables sw);
+    let gt_vars =
+      OpamGlobalState.with_ `Lock_none (fun { OpamStateTypes.global_variables; _ } -> global_variables)
+    in
+    let os = OpamSysPoll.os gt_vars and os_family = OpamSysPoll.os_family gt_vars in
+    output_system_packages_and_env ~skip_system ~os ~os_family bidir (create_env gt_vars sw);
     export switch bidir;
   end;
   cleanup ();
@@ -969,7 +951,8 @@ let rebuild global_options disable_sandboxing build_options skip_system ignore_e
        log "environment differs (ignored)"
      else
        failwith "environment does not match");
-    if not skip_system then install_system_packages stripped_build_info;
+    let os = List.assoc_opt "OS" env and os_family = List.assoc_opt "OS_FAMILY" env in
+    if not skip_system then install_system_packages ~os ~os_family stripped_build_info;
     common_start global_options disable_sandboxing build_options cache;
     OpamStateConfig.update ~unlock_base:true ();
     let changes', build2nd, package = rebuild ~skip_system ~sw ~bidir:build_info out in
