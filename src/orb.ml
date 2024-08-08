@@ -714,7 +714,10 @@ let add_repos repos =
           let failed, _rt = OpamRepositoryCommand.update_with_auto_upgrade rt names in
           List.iter
             (fun rn -> log "repo update failed for %s" (OpamRepositoryName.to_string rn))
-            failed
+            failed;
+          match failed with
+          | [] -> ()
+          | _ -> exit 1
         ));
   names
 
