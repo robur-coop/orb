@@ -77,20 +77,37 @@ let custom_env_keys = [
   "OS" ; "OS_DISTRIBUTION" ; "OS_VERSION" ; "OS_FAMILY" ; "SWITCH_PATH" ; "ORB_DATA"
 ]
 
-let custom_env gt_vars s = [
-  "OS", OpamSysPoll.os gt_vars;
-  "OS_DISTRIBUTION", OpamSysPoll.os_distribution gt_vars;
-  "OS_VERSION", OpamSysPoll.os_version gt_vars;
-  "OS_FAMILY", OpamSysPoll.os_family gt_vars;
+type env_vars = {
+  os : string option ;
+  os_distribution : string option ;
+  os_version : string option ;
+  os_family : string option ;
+  arch : string option ;
+}
+
+let retrieve_opam_vars gt_vars = {
+  os = OpamSysPoll.os gt_vars ;
+  os_distribution = OpamSysPoll.os_distribution gt_vars ;
+  os_version = OpamSysPoll.os_version gt_vars ;
+  os_family = OpamSysPoll.os_family gt_vars ;
+  arch = OpamSysPoll.arch gt_vars ;
+}
+
+let custom_env vars s = [
+  "OS", vars.os;
+  "OS_DISTRIBUTION", vars.os_distribution;
+  "OS_VERSION", vars.os_version;
+  "OS_FAMILY", vars.os_family;
+  "ARCH", vars.arch;
   "ORB_DATA", Some orb_data;
   "SWITCH_PATH", s
 ]
 
-let create_env gt_vars (s : string) =
+let create_env vars (s : string) =
   Array.to_list (Unix.environment () ) @
   List.fold_left
     (fun acc (k, v) -> match v with None -> acc | Some v -> (k^"="^v)::acc)
-    [] (custom_env gt_vars (Some s))
+    [] (custom_env vars (Some s))
 
 let env_to_string env =
   String.concat "\n" env
@@ -177,8 +194,8 @@ let cleanup () =
     let gt_vars =
       OpamGlobalState.with_ `Lock_none (fun { OpamStateTypes.global_variables; _ } -> global_variables)
     in
-    let os = OpamSysPoll.os gt_vars and os_family = OpamSysPoll.os_family gt_vars in
-    output_system_packages_and_env ~skip_system ~os ~os_family dir (create_env gt_vars sw);
+    let vars = retrieve_opam_vars gt_vars in
+    output_system_packages_and_env ~skip_system ~os:vars.os ~os_family:vars.os_family dir (create_env vars sw);
     export switch dir;
     remove_switch switch;
     OpamFilename.rmdir
@@ -208,7 +225,8 @@ let os_matches env =
   let gt_vars =
     OpamGlobalState.with_ `Lock_none (fun { OpamStateTypes.global_variables; _ } -> global_variables)
   in
-  List.for_all (fun (k, v) -> opt_compare k v) (custom_env gt_vars None)
+  let vars = retrieve_opam_vars gt_vars in
+  List.for_all (fun (k, v) -> opt_compare k v) (custom_env vars None)
 
 (** Steps *)
 let import_switch skip_system dir sw switch export =
@@ -919,8 +937,8 @@ let build global_options disable_sandboxing build_options twice
     let gt_vars =
       OpamGlobalState.with_ `Lock_none (fun { OpamStateTypes.global_variables; _ } -> global_variables)
     in
-    let os = OpamSysPoll.os gt_vars and os_family = OpamSysPoll.os_family gt_vars in
-    output_system_packages_and_env ~skip_system ~os ~os_family bidir (create_env gt_vars sw);
+    let vars = retrieve_opam_vars gt_vars in
+    output_system_packages_and_env ~skip_system ~os:vars.os ~os_family:vars.os_family bidir (create_env vars sw);
     export switch bidir;
   end;
   cleanup ();
