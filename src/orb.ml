@@ -77,20 +77,20 @@ let custom_env_keys = [
   "OS" ; "OS_DISTRIBUTION" ; "OS_VERSION" ; "OS_FAMILY" ; "SWITCH_PATH" ; "ORB_DATA"
 ]
 
-let custom_env s = [
-  "OS", OpamSysPoll.os ();
-  "OS_DISTRIBUTION", OpamSysPoll.os_distribution ();
-  "OS_VERSION", OpamSysPoll.os_version ();
-  "OS_FAMILY", OpamSysPoll.os_family ();
+let custom_env gt_vars s = [
+  "OS", OpamSysPoll.os gt_vars;
+  "OS_DISTRIBUTION", OpamSysPoll.os_distribution gt_vars;
+  "OS_VERSION", OpamSysPoll.os_version gt_vars;
+  "OS_FAMILY", OpamSysPoll.os_family gt_vars;
   "ORB_DATA", Some orb_data;
   "SWITCH_PATH", s
 ]
 
-let create_env (s : string) =
+let create_env gt_vars (s : string) =
   Array.to_list (Unix.environment () ) @
   List.fold_left
     (fun acc (k, v) -> match v with None -> acc | Some v -> (k^"="^v)::acc)
-    [] (custom_env (Some s))
+    [] (custom_env gt_vars (Some s))
 
 let env_to_string env =
   String.concat "\n" env
@@ -105,9 +105,12 @@ let env_of_string str =
     [] lines
 
 let dump_system_packages filename =
-  match OpamSysPoll.os_family () with
+  let gt_vars =
+    OpamGlobalState.with_ `Lock_none (fun { OpamStateTypes.global_variables; _ } -> global_variables)
+  in
+  match OpamSysPoll.os_family gt_vars with
   | Some "bsd" ->
-    begin match OpamSysPoll.os_distribution () with
+    begin match OpamSysPoll.os_distribution gt_vars with
       | Some "freebsd" ->
         let r = Sys.command ("/usr/sbin/pkg query %n-%v > " ^ filename) in
         if r <> 0 then log "failed to dump system packages (exit %d)" r
@@ -125,9 +128,12 @@ let dump_system_packages filename =
     log "unsupported OS (no system packages), no family"
 
 let restore_system_packages filename =
-  match OpamSysPoll.os_family () with
+  let gt_vars =
+    OpamGlobalState.with_ `Lock_none (fun { OpamStateTypes.global_variables; _ } -> global_variables)
+  in
+  match OpamSysPoll.os_family gt_vars with
   | Some "bsd" ->
-    begin match OpamSysPoll.os_distribution () with
+    begin match OpamSysPoll.os_distribution gt_vars with
       | Some "freebsd" ->
         let r = Sys.command ("cat " ^ filename ^ " | xargs /usr/sbin/pkg install -y") in
         if r <> 0 then log "couldn't install packages"
@@ -187,7 +193,10 @@ let cleanup () =
   match !clean_switch with
   | None -> ()
   | Some (switch, skip_system, dir, sw) ->
-    output_system_packages_and_env ~skip_system dir (create_env sw);
+    let gt_vars =
+      OpamGlobalState.with_ `Lock_none (fun { OpamStateTypes.global_variables; _ } -> global_variables)
+    in
+    output_system_packages_and_env ~skip_system dir (create_env gt_vars sw);
     export switch dir;
     remove_switch switch;
     OpamFilename.rmdir
@@ -214,7 +223,10 @@ let os_matches env =
         false
       end
   in
-  List.for_all (fun (k, v) -> opt_compare k v) (custom_env None)
+  let gt_vars =
+    OpamGlobalState.with_ `Lock_none (fun { OpamStateTypes.global_variables; _ } -> global_variables)
+  in
+  List.for_all (fun (k, v) -> opt_compare k v) (custom_env gt_vars None)
 
 (** Steps *)
 let import_switch skip_system dir sw switch export =
@@ -926,7 +938,7 @@ let build global_options disable_sandboxing build_options twice
     else None
   in
   if OpamClientConfig.(!r.keep_build_dir) then begin
-    output_system_packages_and_env ~skip_system bidir (create_env sw);
+    output_system_packages_and_env ~skip_system bidir (create_env gt.global_variables sw);
     export switch bidir;
   end;
   cleanup ();
