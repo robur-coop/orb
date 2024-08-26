@@ -77,12 +77,12 @@ let custom_env_keys = [
   "OS" ; "OS_DISTRIBUTION" ; "OS_VERSION" ; "OS_FAMILY" ; "SWITCH_PATH" ; "ORB_DATA"
 ]
 
-let retrieve_opam_vars _gt_vars = {
-  Common.os = OpamSysPoll.os () (* gt_vars *) ;
-  os_distribution = OpamSysPoll.os_distribution () (* gt_vars *) ;
-  os_version = OpamSysPoll.os_version () (* gt_vars *) ;
-  os_family = OpamSysPoll.os_family () (* gt_vars *) ;
-  arch = OpamSysPoll.arch () (* gt_vars *) ;
+let retrieve_opam_vars gt_vars = {
+  Common.os = OpamSysPoll.os gt_vars ;
+  os_distribution = OpamSysPoll.os_distribution gt_vars ;
+  os_version = OpamSysPoll.os_version gt_vars ;
+  os_family = OpamSysPoll.os_family gt_vars ;
+  arch = OpamSysPoll.arch gt_vars ;
 }
 
 let custom_env vars s = [
