@@ -29,7 +29,7 @@ at https://builds.robur.coop
 ## Install & use
 
 ```
-$ opam pin git+https://github.com/robur-coop/orb#next
+$ opam install orb
 $ orb build --twice --repos=default:https://opam.ocaml.org cmdliner
 ```
 
