@@ -12,7 +12,7 @@ let deps vars opam =
   let depends = OpamFile.OPAM.depends opam in
   let env var = match OpamVariable.Full.to_string var with
     | "monorepo" | "vendor" | "post" -> Some (OpamTypes.B true)
-    | "build" | "with-test" | "dev" | "with-doc" -> Some (B false)
+    | "build" | "with-test" | "dev" | "with-doc" | "with-dev-setup" -> Some (B false)
     | "os" -> Option.map (fun x -> OpamTypes.S x) vars.Common.os
     | "os-family" -> Option.map (fun x -> OpamTypes.S x) vars.Common.os_family
     | "os-distribution" -> Option.map (fun x -> OpamTypes.S x) vars.Common.os_distribution
