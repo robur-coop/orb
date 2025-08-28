@@ -161,9 +161,9 @@ let output_system_packages_and_env ~skip_system ~os ~os_family dir env =
   end
 
 let drop_states ?gt ?rt ?st () =
-  OpamStd.Option.iter OpamSwitchState.drop st;
-  OpamStd.Option.iter OpamRepositoryState.drop rt;
-  OpamStd.Option.iter OpamGlobalState.drop gt
+  Stdlib.Option.iter OpamSwitchState.drop st;
+  Stdlib.Option.iter OpamRepositoryState.drop rt;
+  Stdlib.Option.iter OpamGlobalState.drop gt
 
 let switch_filename dir =
   let fn = Printf.sprintf "%s/%s" dir dot_switch in
