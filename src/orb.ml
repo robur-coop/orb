@@ -979,7 +979,7 @@ let rebuild global_options disable_sandboxing build_options skip_system ignore_e
   end
 
 (** CLI *)
-open Cmdliner
+open OpamCmdliner
 open OpamArg
 
 let validity = cli_from cli2_1
