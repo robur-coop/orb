@@ -387,6 +387,8 @@ let common_start global_options disable_sandboxing build_options cache =
         (OpamStd.Sys.guess_shell_compat ())
     in
     drop_states ~gt ~rt ();
+    (* this is for https://github.com/ocaml/opam/issues/6454 *)
+    OpamSolverConfig.update ~solver_preferences_default:(lazy (Some "-notuptodate")) ();
     (* this code block is here until ocaml/opam#5315 is solved, and we can pass through init_config *)
     (match cache with
      | None -> ()
