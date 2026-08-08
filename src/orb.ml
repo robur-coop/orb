@@ -66,6 +66,10 @@ let mirage_opam_lock = "x-mirage-opam-lock-location"
 let mirage_configure = "x-mirage-configure"
 let mirage_pre_build = "x-mirage-pre-build"
 let mirage_extra_repo = "x-mirage-extra-repo"
+let mkernel_pre_build = "x-mkernel-pre-build"
+let mfetch_target = "x-mfetch-target"
+let mfetch_vendored = "x-mfetch-vendored-dirs"
+let mfetch_endpoints = "x-mfetch-endpoints"
 
 let build_dir () =
   OpamFilename.Dir.of_string
@@ -542,7 +546,7 @@ let of_opam_value =
   (* TODO could use OpamFilter.commands .. .. *)
   let open OpamParserTypes.FullPos in
   let ( let* ) = Result.bind in
-  let extract_data = function
+  let extract_string_id_data = function
     | { pelem = String s ; _ } -> Ok s
     | { pelem = Ident s ; _ } ->
       if String.equal s "make" then
@@ -550,6 +554,20 @@ let of_opam_value =
       else
         Error (`Msg ("unexpected variable " ^ String.escaped s))
     | _ -> Error (`Msg "expected a string or identifier")
+  in
+  let extract_data = function
+    | { pelem = List { pelem = cmds ; _ } ; _ } ->
+      let* cmds =
+        List.fold_left (fun acc v ->
+            let* acc = acc in
+            let* data = extract_string_id_data v in
+            Ok (data :: acc))
+          (Ok []) cmds
+      in
+      Ok (List.rev cmds)
+    | x ->
+      let* cmd = extract_string_id_data x in
+      Ok [ cmd ]
   in
   function
   | { pelem = List { pelem = lbody ; _ } ; _ } ->
@@ -685,7 +703,7 @@ let rebuild ~skip_system ~sw ~bidir out =
        | None -> log "failed to find %s" mirage_configure; exit 1
        | Some Error `Msg msg -> log "failed to parse %s: %s" mirage_configure msg; exit 1
        | Some Ok configure ->
-         (match execute_commands dirname (Unix.getenv "PREFIX") [ configure ] with
+         (match execute_commands dirname (Unix.getenv "PREFIX") configure with
           | Ok () -> ();
           | Error msg -> log "%s" msg; exit 1));
       let st =
@@ -781,6 +799,24 @@ let modify_opam_file vars st package opam dirname =
       in
       Ok (OpamSwitchState.update_package_metadata package opam st)
 
+let merge_mfetch_opam st package opam dirname mfetch_lock_filename =
+  let mfetch_lock =
+    let base = OpamFilename.Base.of_string mfetch_lock_filename in
+    OpamFile.OPAM.read (OpamFile.make (OpamFilename.create dirname base))
+  in
+  match
+    OpamFile.OPAM.extended mfetch_lock mfetch_target Fun.id,
+    OpamFile.OPAM.extended mfetch_lock mfetch_vendored Fun.id,
+    OpamFile.OPAM.extended mfetch_lock mfetch_endpoints Fun.id
+  with
+  | None, _, _ | _, None, _ | _, _, None ->
+    Error "expected x-mfetch-target, x-mfetch-vendored-dirs, and x-mfetch-endpoints to be present"
+  | Some target, Some vendors, Some endpoints ->
+    let opam = OpamFile.OPAM.add_extension opam mfetch_target target in
+    let opam = OpamFile.OPAM.add_extension opam mfetch_vendored vendors in
+    let opam = OpamFile.OPAM.add_extension opam mfetch_endpoints endpoints in
+    Ok (OpamSwitchState.update_package_metadata package opam st)
+
 (* Main function *)
 let build global_options disable_sandboxing build_options twice
     repos cache out_dir switch_name epoch skip_system solver_timeout atom
@@ -867,12 +903,13 @@ let build global_options disable_sandboxing build_options twice
   begin
     match
       OpamFile.OPAM.extended opam mirage_configure of_opam_value,
-      OpamFile.OPAM.extended opam mirage_pre_build of_opam_value
+      OpamFile.OPAM.extended opam mirage_pre_build of_opam_value,
+      OpamFile.OPAM.extended opam mkernel_pre_build of_opam_value
     with
-    | None, None ->
+    | None, None, None ->
       let gt, rt, st = install switch (atom :> OpamFormula.atom) in
       drop_states ~gt ~rt ~st ()
-    | Some Ok configure, Some Ok pre_build ->
+    | Some Ok configure, Some Ok pre_build, None ->
       log "installing dependencies";
       let gt, rt, st = install ~deps_only:true switch (atom :> OpamFormula.atom) in
       log "installed dependencies";
@@ -895,7 +932,7 @@ let build global_options disable_sandboxing build_options twice
       OpamGlobalState.with_ `Lock_write @@ fun gt ->
       OpamSwitchCommand.switch `Lock_none gt switch;
       drop_states ~gt ();
-      (match execute_commands dirname prefix [ configure ; pre_build ] with
+      (match execute_commands dirname prefix (configure @ pre_build) with
        | Ok () -> ();
        | Error msg -> log "%s" msg; exit 1);
       OpamGlobalState.with_ `Lock_none @@ fun gt ->
@@ -912,17 +949,64 @@ let build global_options disable_sandboxing build_options twice
         | Error msg -> log "%s" msg; exit 1
       in
       drop_states ~gt ~rt ~st ();
-    | Some Error `Msg m, _ ->
+    | None, None, Some Ok pre_build ->
+      log "installing dependencies";
+      let gt, rt, st = install ~deps_only:true switch (atom :> OpamFormula.atom) in
+      log "installed dependencies";
+      let dirname = build_dir () in
+      OpamFilename.rmdir dirname;
+      OpamFilename.mkdir dirname;
+      OpamStd.Sys.at_exit (fun () ->
+          if not (OpamClientConfig.(!r.keep_build_dir)) then OpamFilename.rmdir dirname);
+      (match OpamProcess.Job.run (download_and_extract_job st package dirname) with
+       | Ok () -> ()
+       | Error msg -> log "%s" msg; exit 1);
+(* we'll need zarith - but only for the vendors... -- does this work? we'll need to check
+      (match OpamFile.OPAM.extended opam mirage_extra_repo repos_of_opam with
+       | None -> ()
+       | Some Error `Msg m -> log "error parsing extra repositories %s" m; exit 1
+       | Some Ok repos ->
+         let repo_names = add_repos repos in
+         OpamSwitchState.update_repositories gt (fun old_repos ->
+             repo_names @ old_repos) switch); *)
+      drop_states ~gt ~rt ~st ();
+      OpamGlobalState.with_ `Lock_write @@ fun gt ->
+      OpamSwitchCommand.switch `Lock_none gt switch;
+      drop_states ~gt ();
+      (match execute_commands dirname prefix pre_build with
+       | Ok () -> ();
+       | Error msg -> log "%s" msg; exit 1);
+      OpamGlobalState.with_ `Lock_none @@ fun gt ->
+      OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
+      OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
+      let st =
+        match merge_mfetch_opam st package opam dirname "_mfetch.locked" with
+        | Ok st -> st
+        | Error msg -> log "%s" msg; exit 1
+      in
+      let st =
+        match OpamProcess.Job.run (build_and_install st dirname package) with
+        | Ok st -> st
+        | Error msg -> log "%s" msg; exit 1
+      in
+      drop_states ~gt ~rt ~st ();
+    | Some Error `Msg m, _, _ ->
       log "error parsing %s: %s" mirage_configure m;
       exit 1
-    | _, Some Error `Msg m ->
+    | _, Some Error `Msg m, _ ->
       log "error parsing %s: %s" mirage_pre_build m;
       exit 1
-    | None, Some _ ->
+    | _, _, Some Error `Msg m ->
+      log "error parsing %s: %s" mkernel_pre_build m;
+      exit 1
+    | None, Some _, _ ->
       log "only %s, but no %s present" mirage_pre_build mirage_configure;
       exit 1
-    | Some _, None ->
+    | Some _, None, _ ->
       log "only %s, but no %s present" mirage_configure mirage_pre_build;
+      exit 1
+    | Some _, Some _, Some _ ->
+      log "both mirage and mkernel provided, giving up";
       exit 1
   end;
   let changes = tracking_map switch package in
