@@ -66,6 +66,10 @@ let mirage_opam_lock = "x-mirage-opam-lock-location"
 let mirage_configure = "x-mirage-configure"
 let mirage_pre_build = "x-mirage-pre-build"
 let mirage_extra_repo = "x-mirage-extra-repo"
+let mkernel_pre_build = "x-mkernel-pre-build"
+let mfetch_target = "x-mfetch-target"
+let mfetch_vendored = "x-mfetch-vendored-dirs"
+let mfetch_endpoints = "x-mfetch-endpoints"
 
 let build_dir () =
   OpamFilename.Dir.of_string
@@ -542,7 +546,7 @@ let of_opam_value =
   (* TODO could use OpamFilter.commands .. .. *)
   let open OpamParserTypes.FullPos in
   let ( let* ) = Result.bind in
-  let extract_data = function
+  let extract_string_id_data = function
     | { pelem = String s ; _ } -> Ok s
     | { pelem = Ident s ; _ } ->
       if String.equal s "make" then
@@ -550,6 +554,20 @@ let of_opam_value =
       else
         Error (`Msg ("unexpected variable " ^ String.escaped s))
     | _ -> Error (`Msg "expected a string or identifier")
+  in
+  let extract_data = function
+    | { pelem = List { pelem = cmds ; _ } ; _ } ->
+      let* cmds =
+        List.fold_left (fun acc v ->
+            let* acc = acc in
+            let* data = extract_string_id_data v in
+            Ok (data :: acc))
+          (Ok []) cmds
+      in
+      Ok (List.rev cmds)
+    | x ->
+      let* cmd = extract_string_id_data x in
+      Ok [ cmd ]
   in
   function
   | { pelem = List { pelem = lbody ; _ } ; _ } ->
@@ -607,10 +625,27 @@ let rebuild ~skip_system ~sw ~bidir out =
     OpamPackage.Name.Map.find (OpamPackage.name package)
       sw_exp.OpamFile.SwitchExport.overlays
   in
-  let monorepo, switch_in =
-    match OpamFile.OPAM.extended opam opam_monorepo_duni Fun.id with
-    | None -> false, switch_in
-    | Some _ ->
+  let monorepo, mkernel, switch_in =
+    match
+      OpamFile.OPAM.extended opam opam_monorepo_duni Fun.id,
+      OpamFile.OPAM.extended opam mfetch_target Fun.id
+    with
+    | None, None -> false, false, switch_in
+    | None, Some _ ->
+      (* we remove the package in question from the installed & roots *)
+      let selections =
+        let sel = sw_exp.OpamFile.SwitchExport.selections in
+        { sel with
+          sel_installed = OpamPackage.Set.remove package sel.sel_installed ;
+          sel_roots = OpamPackage.Set.empty }
+      in
+      let sw_exp = { sw_exp with selections } in
+      let tmp = OpamFilename.of_string (Filename.temp_file "orb" "export") in
+      OpamStd.Sys.at_exit (fun () -> OpamFilename.remove tmp);
+      let tmp = OpamFile.make tmp in
+      OpamFile.SwitchExport.write tmp sw_exp;
+      false, true, tmp
+    | Some _, None ->
       let overlays =
         OpamPackage.Name.Map.remove (OpamPackage.name package)
           sw_exp.OpamFile.SwitchExport.overlays
@@ -626,9 +661,65 @@ let rebuild ~skip_system ~sw ~bidir out =
       OpamStd.Sys.at_exit (fun () -> OpamFilename.remove tmp);
       let tmp = OpamFile.make tmp in
       OpamFile.SwitchExport.write tmp sw_exp;
-      true, tmp
+      true, false, tmp
+    | _ -> log "both monorepo and mtarget, can't proceed"; exit 1
   in
   import_switch skip_system out sw switch (Some switch_in);
+  (if mkernel then begin
+      log "extracting sources";
+      OpamGlobalState.with_ `Lock_write @@ fun gt ->
+      OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
+      OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
+      OpamSwitchCommand.switch `Lock_none gt switch;
+      let dirname = build_dir () in
+      OpamFilename.rmdir dirname;
+      OpamFilename.mkdir dirname;
+      OpamStd.Sys.at_exit (fun () ->
+          if not (OpamClientConfig.(!r.keep_build_dir)) then OpamFilename.rmdir dirname);
+      let st = OpamSwitchState.update_package_metadata package opam st in
+      (match OpamProcess.Job.run (download_and_extract_job st package dirname) with
+       | Ok () -> ()
+       | Error msg -> log "%s" msg; exit 1);
+      (match OpamFile.OPAM.extended opam mfetch_vendored duniverse_dirs with
+       | None -> log "expected x-mfetch-vendored-dirs to be present" ; exit 1
+       | Some Error `Msg msg -> log "failed to parse x-mfetch-vendored-dirs %s" msg ; exit 1
+       | Some Ok v ->
+         log "found %d x-mfetch-vendored-dirs" (List.length v);
+         let vendor_dir =
+           match OpamFile.OPAM.extended opam mfetch_target location_of_opam with
+           | None -> log "no x-mfetch-target in opam file"; exit 1
+           | Some Error `Msg s -> log "error retrieving x-mfetch-target %s" s; exit 1
+           | Some Ok path -> path
+         in
+         OpamFilename.in_dir dirname (fun () ->
+             let dir = OpamFilename.Dir.of_string vendor_dir in
+             OpamFilename.mkdir dir;
+             OpamFilename.write
+               OpamFilename.(create dir (Base.of_string "dune"))
+               "(vendored_dirs *)");
+         let jobs = OpamFile.Config.dl_jobs gt.config
+         and cache_urls = OpamFile.Config.dl_cache gt.config
+         and cache_dir = OpamRepositoryPath.download_cache gt.root
+         in
+         let pull_one (url, dir, hashes) =
+           let open OpamProcess.Job.Op in
+           let out = OpamFilename.Dir.(of_string (to_string dirname ^ "/" ^ vendor_dir ^ "/" ^ dir)) in
+           OpamRepository.pull_tree ~cache_dir ~cache_urls dir out hashes [ url ] @@| function
+           | Result _ | Up_to_date _ -> Ok ()
+           | Not_available (_, long_msg) ->
+             Error ("failed to download " ^ OpamUrl.to_string url ^ " into " ^ dir ^ ": " ^ long_msg)
+         in
+         let rs = OpamParallel.map ~jobs ~command:pull_one v in
+         match List.fold_left (fun acc r -> Result.bind acc (Fun.const r)) (Ok ()) rs with
+         | Ok () -> log "downloaded %d tarballs" (List.length rs);
+         | Error e -> log "download error %s" e; exit 1);
+      let st =
+        match OpamProcess.Job.run (build_and_install st dirname package) with
+        | Ok st -> st
+        | Error msg -> log "%s" msg; exit 1
+      in
+      drop_states ~gt ~rt ~st ()
+    end);
   (if monorepo then begin
       log "extracting sources";
       OpamGlobalState.with_ `Lock_write @@ fun gt ->
@@ -685,7 +776,7 @@ let rebuild ~skip_system ~sw ~bidir out =
        | None -> log "failed to find %s" mirage_configure; exit 1
        | Some Error `Msg msg -> log "failed to parse %s: %s" mirage_configure msg; exit 1
        | Some Ok configure ->
-         (match execute_commands dirname (Unix.getenv "PREFIX") [ configure ] with
+         (match execute_commands dirname (Unix.getenv "PREFIX") configure with
           | Ok () -> ();
           | Error msg -> log "%s" msg; exit 1));
       let st =
@@ -781,6 +872,24 @@ let modify_opam_file vars st package opam dirname =
       in
       Ok (OpamSwitchState.update_package_metadata package opam st)
 
+let merge_mfetch_opam st package opam dirname mfetch_lock_filename =
+  let mfetch_lock =
+    let base = OpamFilename.Base.of_string mfetch_lock_filename in
+    OpamFile.OPAM.read (OpamFile.make (OpamFilename.create dirname base))
+  in
+  match
+    OpamFile.OPAM.extended mfetch_lock mfetch_target Fun.id,
+    OpamFile.OPAM.extended mfetch_lock mfetch_vendored Fun.id,
+    OpamFile.OPAM.extended mfetch_lock mfetch_endpoints Fun.id
+  with
+  | None, _, _ | _, None, _ | _, _, None ->
+    Error "expected x-mfetch-target, x-mfetch-vendored-dirs, and x-mfetch-endpoints to be present"
+  | Some target, Some vendors, Some endpoints ->
+    let opam = OpamFile.OPAM.add_extension opam mfetch_target target in
+    let opam = OpamFile.OPAM.add_extension opam mfetch_vendored vendors in
+    let opam = OpamFile.OPAM.add_extension opam mfetch_endpoints endpoints in
+    Ok (OpamSwitchState.update_package_metadata package opam st)
+
 (* Main function *)
 let build global_options disable_sandboxing build_options twice
     repos cache out_dir switch_name epoch skip_system solver_timeout atom
@@ -867,12 +976,13 @@ let build global_options disable_sandboxing build_options twice
   begin
     match
       OpamFile.OPAM.extended opam mirage_configure of_opam_value,
-      OpamFile.OPAM.extended opam mirage_pre_build of_opam_value
+      OpamFile.OPAM.extended opam mirage_pre_build of_opam_value,
+      OpamFile.OPAM.extended opam mkernel_pre_build of_opam_value
     with
-    | None, None ->
+    | None, None, None ->
       let gt, rt, st = install switch (atom :> OpamFormula.atom) in
       drop_states ~gt ~rt ~st ()
-    | Some Ok configure, Some Ok pre_build ->
+    | Some Ok configure, Some Ok pre_build, None ->
       log "installing dependencies";
       let gt, rt, st = install ~deps_only:true switch (atom :> OpamFormula.atom) in
       log "installed dependencies";
@@ -895,7 +1005,7 @@ let build global_options disable_sandboxing build_options twice
       OpamGlobalState.with_ `Lock_write @@ fun gt ->
       OpamSwitchCommand.switch `Lock_none gt switch;
       drop_states ~gt ();
-      (match execute_commands dirname prefix [ configure ; pre_build ] with
+      (match execute_commands dirname prefix (configure @ pre_build) with
        | Ok () -> ();
        | Error msg -> log "%s" msg; exit 1);
       OpamGlobalState.with_ `Lock_none @@ fun gt ->
@@ -912,17 +1022,66 @@ let build global_options disable_sandboxing build_options twice
         | Error msg -> log "%s" msg; exit 1
       in
       drop_states ~gt ~rt ~st ();
-    | Some Error `Msg m, _ ->
+    | None, None, Some Ok pre_build ->
+      log "installing dependencies";
+      let gt, rt, st = install ~deps_only:true switch (atom :> OpamFormula.atom) in
+      log "installed dependencies";
+      let dirname = build_dir () in
+      OpamFilename.rmdir dirname;
+      OpamFilename.mkdir dirname;
+      OpamStd.Sys.at_exit (fun () ->
+          if not (OpamClientConfig.(!r.keep_build_dir)) then OpamFilename.rmdir dirname);
+      (match OpamProcess.Job.run (download_and_extract_job st package dirname) with
+       | Ok () -> ()
+       | Error msg -> log "%s" msg; exit 1);
+(* we'll need zarith - but only for the vendors... -- does this work? we'll need to check
+      (match OpamFile.OPAM.extended opam mirage_extra_repo repos_of_opam with
+       | None -> ()
+       | Some Error `Msg m -> log "error parsing extra repositories %s" m; exit 1
+       | Some Ok repos ->
+         let repo_names = add_repos repos in
+         OpamSwitchState.update_repositories gt (fun old_repos ->
+             repo_names @ old_repos) switch); *)
+      drop_states ~gt ~rt ~st ();
+      OpamGlobalState.with_ `Lock_write @@ fun gt ->
+      OpamSwitchCommand.switch `Lock_none gt switch;
+      drop_states ~gt ();
+      (match execute_commands dirname prefix pre_build with
+       | Ok () -> ();
+       | Error msg -> log "%s" msg; exit 1);
+      OpamGlobalState.with_ `Lock_none @@ fun gt ->
+      OpamRepositoryState.with_ `Lock_none gt @@ fun rt ->
+      OpamSwitchState.with_ `Lock_write ~rt ~switch gt @@ fun st ->
+      let st =
+        match merge_mfetch_opam st package opam dirname "_mfetch.locked" with
+        | Ok st -> st
+        | Error msg -> log "%s" msg; exit 1
+      in
+      let st =
+        match OpamProcess.Job.run (build_and_install st dirname package) with
+        | Ok st -> st
+        | Error msg -> log "%s" msg; exit 1
+      in
+      (* TODO to keep it minimal, should we remove unic, mfetch and all the
+         dependencies no longer needed? *)
+      drop_states ~gt ~rt ~st ();
+    | Some Error `Msg m, _, _ ->
       log "error parsing %s: %s" mirage_configure m;
       exit 1
-    | _, Some Error `Msg m ->
+    | _, Some Error `Msg m, _ ->
       log "error parsing %s: %s" mirage_pre_build m;
       exit 1
-    | None, Some _ ->
+    | _, _, Some Error `Msg m ->
+      log "error parsing %s: %s" mkernel_pre_build m;
+      exit 1
+    | None, Some _, _ ->
       log "only %s, but no %s present" mirage_pre_build mirage_configure;
       exit 1
-    | Some _, None ->
+    | Some _, None, _ ->
       log "only %s, but no %s present" mirage_configure mirage_pre_build;
+      exit 1
+    | Some _, Some _, Some _ ->
+      log "both mirage and mkernel provided, giving up";
       exit 1
   end;
   let changes = tracking_map switch package in
