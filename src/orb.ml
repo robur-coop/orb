@@ -521,26 +521,28 @@ let duniverse_dirs =
   | _ -> Error (`Msg "expected a list or a nested list")
 
 let execute_commands dirname prefix cmds =
-  OpamFilename.in_dir dirname (fun () ->
-      let path = Unix.getenv "PATH" in
-      let p' = prefix ^ "/bin:" ^ path in
-      Unix.putenv "PATH" p';
-      let r =
-        List.fold_left (fun acc cmd_args ->
-            Result.bind acc (fun () ->
-                match cmd_args with
-                | cmd :: args ->
-                  let cmd = Filename.quote_command cmd args in
-                  let r = Sys.command cmd in
-                  if r <> 0 then
-                    Error (cmd ^ " exited with " ^ string_of_int r)
-                  else
-                    Ok ()
-                | [] -> Ok ()))
-          (Ok ()) cmds
-      in
-      Unix.putenv "PATH" path;
-      r)
+  let dir = OpamFilename.Dir.to_string dirname in
+  let cwd = Unix.getcwd () in
+  Unix.chdir dir;
+  Fun.protect ~finally:(fun () -> Unix.chdir cwd)
+    (fun () ->
+       let path = Unix.getenv "PATH" in
+       Fun.protect ~finally:(fun () -> Unix.putenv "PATH" path)
+         (fun () ->
+            let p' = prefix ^ "/bin:" ^ path in
+            Unix.putenv "PATH" p';
+            List.fold_left (fun acc cmd_args ->
+                Result.bind acc (fun () ->
+                    match cmd_args with
+                    | cmd :: args ->
+                      let cmd = Filename.quote_command cmd args in
+                      let r = Sys.command cmd in
+                      if r <> 0 then
+                        Error (cmd ^ " exited with " ^ string_of_int r)
+                      else
+                        Ok ()
+                    | [] -> Ok ()))
+              (Ok ()) cmds))
 
 let of_opam_value =
   (* TODO could use OpamFilter.commands .. .. *)
@@ -691,19 +693,20 @@ let rebuild ~skip_system ~sw ~bidir out =
            | Some Error `Msg s -> log "error retrieving x-mfetch-target %s" s; exit 1
            | Some Ok path -> path
          in
-         OpamFilename.in_dir dirname (fun () ->
-             let dir = OpamFilename.Dir.of_string vendor_dir in
-             OpamFilename.mkdir dir;
-             OpamFilename.write
-               OpamFilename.(create dir (Base.of_string "dune"))
-               "(vendored_dirs *)");
+         let vendor_dir =
+           OpamFilename.concat_and_resolve dirname vendor_dir
+         in
+         OpamFilename.mkdir vendor_dir;
+         OpamFilename.write
+           OpamFilename.(create vendor_dir (Base.of_string "dune"))
+           "(vendored_dirs *)";
          let jobs = OpamFile.Config.dl_jobs gt.config
          and cache_urls = OpamFile.Config.dl_cache gt.config
          and cache_dir = OpamRepositoryPath.download_cache gt.root
          in
          let pull_one (url, dir, hashes) =
            let open OpamProcess.Job.Op in
-           let out = OpamFilename.Dir.(of_string (to_string dirname ^ "/" ^ vendor_dir ^ "/" ^ dir)) in
+           let out = OpamFilename.concat_and_resolve vendor_dir dir in
            OpamRepository.pull_tree ~cache_dir ~cache_urls dir out hashes [ url ] @@| function
            | Result _ | Up_to_date _ -> Ok ()
            | Not_available (_, long_msg) ->
@@ -750,19 +753,18 @@ let rebuild ~skip_system ~sw ~bidir out =
              | _ -> log "expected a path with at least 2 elements, got %s" path; exit 1
          in
          let duni_dir = (if prefix = "" then "" else prefix ^ "/") ^ "duniverse" in
-         OpamFilename.in_dir dirname (fun () ->
-             let dir = OpamFilename.Dir.of_string duni_dir in
-             OpamFilename.mkdir dir;
-             OpamFilename.write
-               OpamFilename.(create dir (Base.of_string "dune"))
-               "(vendored_dirs *)");
+         let vendor_dir = OpamFilename.concat_and_resolve dirname duni_dir in
+         OpamFilename.mkdir vendor_dir;
+         OpamFilename.write
+           OpamFilename.(create vendor_dir (Base.of_string "dune"))
+           "(vendored_dirs *)";
          let jobs = OpamFile.Config.dl_jobs gt.config
          and cache_urls = OpamFile.Config.dl_cache gt.config
          and cache_dir = OpamRepositoryPath.download_cache gt.root
          in
          let pull_one (url, dir, hashes) =
            let open OpamProcess.Job.Op in
-           let out = OpamFilename.Dir.(of_string (to_string dirname ^ "/" ^ duni_dir ^ "/" ^ dir)) in
+           let out = OpamFilename.concat_and_resolve vendor_dir dir in
            OpamRepository.pull_tree ~cache_dir ~cache_urls dir out hashes [ url ] @@| function
            | Result _ | Up_to_date _ -> Ok ()
            | Not_available (_, long_msg) ->
