@@ -42,3 +42,4 @@ The initial development was done by Raja Boujbel (working at OCamlPro) in spring
 Another iteration was done in December 2019 by Hannes Mehnert at the reproducible builds summit.
 In 2020 and 2021, Reynir Björnsson contributed together with Hannes Mehnert more adjustments to use orb on FreeBSD and Debian for conducting reproducible builds of MirageOS unikernels.
 In 2022, the robur team contributed work to use orb with MirageOS 4, which uses opam-monorepo.
+In 2026, Hannes Mehnert extended orb with mkernel (MirageOS unikernels using OCaml 5 and effects) workflow.

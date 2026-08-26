@@ -1,3 +1,9 @@
+## v1.1.0 (2026-08-26)
+
+* Support mkernel workflow - MirageOS unikernels with OCaml 5 and effects using
+  miou (#29 @hannesm)
+* Support upcoming opam 2.6 (@hannesm)
+
 ## v1.0.1 (2026-07-06)
 
 * FreeBSD packaging: pass `-t` to pkg create to allow reproducibility (@hannesm)
