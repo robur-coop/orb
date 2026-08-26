@@ -531,11 +531,13 @@ let execute_commands dirname prefix cmds =
          (fun () ->
             let p' = prefix ^ "/bin:" ^ path in
             Unix.putenv "PATH" p';
+            print_endline ("there are " ^ string_of_int (List.length cmds) ^ " commands to execute");
             List.fold_left (fun acc cmd_args ->
                 Result.bind acc (fun () ->
                     match cmd_args with
                     | cmd :: args ->
                       let cmd = Filename.quote_command cmd args in
+                      print_endline ("executing " ^ cmd);
                       let r = Sys.command cmd in
                       if r <> 0 then
                         Error (cmd ^ " exited with " ^ string_of_int r)
@@ -577,6 +579,31 @@ let of_opam_value =
       List.fold_left (fun acc v ->
           let* acc = acc in
           let* data = extract_data v in
+          Ok (data :: acc))
+        (Ok []) lbody
+    in
+    Ok (List.rev data)
+  | _ -> Error (`Msg "expected a list")
+
+let of_single_opam_value =
+  (* TODO could use OpamFilter.commands .. .. *)
+  let open OpamParserTypes.FullPos in
+  let ( let* ) = Result.bind in
+  let extract_string_id_data = function
+    | { pelem = String s ; _ } -> Ok s
+    | { pelem = Ident s ; _ } ->
+      if String.equal s "make" then
+        Ok (Lazy.force OpamStateConfig.(!r.makecmd))
+      else
+        Error (`Msg ("unexpected variable " ^ String.escaped s))
+    | _ -> Error (`Msg "expected a string or identifier")
+  in
+  function
+  | { pelem = List { pelem = lbody ; _ } ; _ } ->
+    let* data =
+      List.fold_left (fun acc v ->
+          let* acc = acc in
+          let* data = extract_string_id_data v in
           Ok (data :: acc))
         (Ok []) lbody
     in
