@@ -531,13 +531,11 @@ let execute_commands dirname prefix cmds =
          (fun () ->
             let p' = prefix ^ "/bin:" ^ path in
             Unix.putenv "PATH" p';
-            print_endline ("there are " ^ string_of_int (List.length cmds) ^ " commands to execute");
             List.fold_left (fun acc cmd_args ->
                 Result.bind acc (fun () ->
                     match cmd_args with
                     | cmd :: args ->
                       let cmd = Filename.quote_command cmd args in
-                      print_endline ("executing " ^ cmd);
                       let r = Sys.command cmd in
                       if r <> 0 then
                         Error (cmd ^ " exited with " ^ string_of_int r)
@@ -801,11 +799,11 @@ let rebuild ~skip_system ~sw ~bidir out =
          match List.fold_left (fun acc r -> Result.bind acc (Fun.const r)) (Ok ()) rs with
          | Ok () -> log "downloaded %d tarballs" (List.length rs);
          | Error e -> log "download error %s" e; exit 1);
-      (match OpamFile.OPAM.extended opam mirage_configure of_opam_value with
+      (match OpamFile.OPAM.extended opam mirage_configure of_single_opam_value with
        | None -> log "failed to find %s" mirage_configure; exit 1
        | Some Error `Msg msg -> log "failed to parse %s: %s" mirage_configure msg; exit 1
        | Some Ok configure ->
-         (match execute_commands dirname (Unix.getenv "PREFIX") configure with
+         (match execute_commands dirname (Unix.getenv "PREFIX") [ configure ] with
           | Ok () -> ();
           | Error msg -> log "%s" msg; exit 1));
       let st =
@@ -1004,8 +1002,8 @@ let build global_options disable_sandboxing build_options twice
   drop_states ~gt ~rt ~st ();
   begin
     match
-      OpamFile.OPAM.extended opam mirage_configure of_opam_value,
-      OpamFile.OPAM.extended opam mirage_pre_build of_opam_value,
+      OpamFile.OPAM.extended opam mirage_configure of_single_opam_value,
+      OpamFile.OPAM.extended opam mirage_pre_build of_single_opam_value,
       OpamFile.OPAM.extended opam mkernel_pre_build of_opam_value
     with
     | None, None, None ->
@@ -1034,7 +1032,7 @@ let build global_options disable_sandboxing build_options twice
       OpamGlobalState.with_ `Lock_write @@ fun gt ->
       OpamSwitchCommand.switch `Lock_none gt switch;
       drop_states ~gt ();
-      (match execute_commands dirname prefix (configure @ pre_build) with
+      (match execute_commands dirname prefix [ configure ; pre_build ] with
        | Ok () -> ();
        | Error msg -> log "%s" msg; exit 1);
       OpamGlobalState.with_ `Lock_none @@ fun gt ->
