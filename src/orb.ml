@@ -1000,6 +1000,18 @@ let build global_options disable_sandboxing build_options twice
   in
   let opam = OpamSwitchState.opam st package in
   drop_states ~gt ~rt ~st ();
+  let () =
+    let errors = ref false in
+    let () =
+      OpamFileTools.lint opam
+      |> List.iter @@ function
+      | id, `Error, err ->
+        errors := true;
+        OpamConsole.errmsg "lint error %u: %s\n" id err
+      | _, `Warning, _ -> ()
+    in
+    if !errors then exit 1
+  in
   begin
     match
       OpamFile.OPAM.extended opam mirage_configure of_single_opam_value,
